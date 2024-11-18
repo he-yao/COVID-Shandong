@@ -1,0 +1,3541 @@
+---
+title: "Shandong Data Analysis - OB & GYN only - Inpatient Sub-analysis"
+author: "Yao He"
+date: "09/28/2021"
+output:
+  pdf_document: default
+---
+
+# SET UP
+
+```{r knitr, include = FALSE}
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(warning=FALSE)
+options(scipen=999)
+
+```
+
+```{r packages,include=FALSE,message=FALSE,warning=FALSE}
+# Load packages
+library(knitr)
+library(plyr)
+library(readr)
+library(dplyr) # mutate(), rename()
+library(ggplot2)
+library(lattice)
+library(nlme)
+library(lme4)
+library(lspline)
+library(stargazer)
+library(UWbe536)
+library(glarma)
+
+#library(kableExtra)
+#library(geepack)
+#library(miceadds)
+#library(data.table)
+#library(doBy)
+#library(tidyr)
+library(sandwich)
+library(MASS)
+library(lmtest)
+library(cowplot)
+
+setwd("~/Documents/R/Research/Shandong/Data/")
+
+```
+
+```{r goldentheme,include=F}
+# Create the golden plot template
+goldentheme <- theme(
+  panel.background = element_rect(fill = "white"),
+  aspect.ratio = ((1 + sqrt(5))/2)^(-1),
+  axis.ticks.length = unit(0.5, "char"),
+  axis.line.x.top = element_line(size = 0.2),
+  axis.line.x.bottom = element_line(size = 0.2),
+  axis.ticks.x = element_line(size = 0.2),
+  axis.text.x = element_text(color = "black", size = 12),
+  axis.title.x = element_text(size = 12,
+                              margin = margin(t = 7.5, r = 0, b = 0, l = 0)),
+  axis.ticks.y = element_blank(),
+  axis.text.y = element_text(color = "black", size = 12,
+                             margin = margin(t = 0, r = -4, b = 0, l = 0)),
+  axis.title.y = element_text(size = 12,
+                              margin = margin(t = 0, r = 7.5, b = 0, l = 0)),
+  legend.key = element_rect(fill = NA, color = NA),
+  panel.grid.major.x = element_blank(),
+  panel.grid.major.y = element_line(color = "gray45", size = 0.2),
+  strip.background = element_blank(),
+  strip.text.x = element_text(size=12),
+  strip.text.y = element_blank(), 
+  strip.placement = "outside", 
+  panel.spacing.x = unit(1.25, "lines"),
+  panel.spacing.y = unit(1, "lines") 
+)
+
+class(goldentheme)
+
+goldentheme_facet <- theme(
+  panel.background = element_rect(fill = "white"),
+  axis.ticks.length = unit(0.5, "char"),
+  axis.line.x.top = element_line(size = 0.2),
+  axis.line.x.bottom = element_line(size = 0.2),
+  axis.ticks.x = element_line(size = 0.2),
+  axis.text.x = element_text(color = "black", size = 12),
+  axis.title.x = element_text(size = 12,
+                              margin = margin(t = 7.5, r = 0, b = 0, l = 0)),
+  axis.ticks.y = element_blank(),
+  axis.text.y = element_text(color = "black", size = 12,
+                             margin = margin(t = 0, r = -4, b = 0, l = 0)),
+  axis.title.y = element_text(size = 12,
+                              margin = margin(t = 0, r = 7.5, b = 0, l = 0)),
+  legend.key = element_rect(fill = NA, color = NA),
+  panel.grid.major.x = element_blank(),
+  panel.grid.major.y = element_line(color = "gray45", size = 0.2),
+  strip.background = element_blank(),
+  strip.text.x = element_text(size=12),
+  strip.text.y = element_blank(), 
+  strip.placement = "outside", 
+  panel.spacing.x = unit(1.25, "lines"),
+  panel.spacing.y = unit(1, "lines") 
+)
+
+class(goldentheme_facet)
+
+
+```
+
+```{r addline fx}
+# create a function to replace any space in x axis labels with a new line
+addline_format <- function(x,...){
+    gsub('\\s','\n',x)
+}
+
+```
+
+
+# OBSTETRICS
+
+## Data & Descriptive
+
+```{r load data, echo=T}
+# read in data
+datOB <- read_csv("Data/allob.csv")
+
+# create Time var: first ever month in dataset = 0
+datOB$time <- (datOB$year-2015)*12+(datOB$month-1)
+
+# create Time1 var: 0 centered at Jan 2020 (1 time point before the pandemic actually happened in Feb 2020)
+datOB$time1 <- datOB$time - 60
+
+# create COVID1 var to indicate just Feb 2020 to make the drop in that month pop.
+datOB$COVID1 <- with(datOB, ifelse(year == 2020 & month == 2, 1, 0))
+
+# create COVID2 var to indicate the time points starting from Mar 2020. 
+datOB$COVID2 <- with(datOB, ifelse(time1 >= 2, 1, 0))
+
+# create Post var; 1 should start at April 2020
+datOB$post <- with(datOB, ifelse(time1 >= 3, (year-2020)*12+(month-3), 0))
+
+# change wrong age data
+datOB$age <- with(datOB, ifelse(age==1000, 0, age))
+
+# exclude newborns (age==0) from the data
+datOBp <- subset(datOB, age>0)
+
+```
+
+## Residence: Urban/Rural
+
+```{r create residence groups}
+### urban rural
+datOBp$urban<-NA
+datOBp$urban<-with(datOBp, ifelse(grepl("梁山",address)|
+                        grepl("邹城",address)|
+                        grepl("巨野",address)|
+                        grepl("泗水",address)|
+                        grepl("嘉祥",address)|
+                        grepl("郓城",address)|
+                        grepl("汶上",address)|
+                        grepl("微山",address)|
+                        grepl("金乡",address)|
+                        grepl("曲阜",address)|
+                        grepl("鱼台",address)|
+                        grepl("邹城",address)|
+                        grepl("滕州",address)|
+                        grepl("李阁",address)|
+                        grepl("肖云",address)|
+                        grepl("鄄城",address)|
+                        grepl("县",address)|
+                        grepl("镇",address)|
+                        grepl("乡",address)|
+                        grepl("村",address)|
+                          grepl("疃里",address)|
+                        grepl("马庙",address)|
+                        grepl("峄山",address)| 
+                        grepl("小安山",address)| 
+                        grepl("太平",address)|
+                        grepl("峄山",address)|
+                        grepl("徐集",address)|
+                        grepl("路街",address)|
+                      grepl("马集",address),0,urban))
+
+datOBp$urban<-with(datOBp, ifelse(grepl("任城",address)|
+                        grepl("市中",address)|
+                        grepl("中区",address)|
+                        grepl("高新区",address)|
+                        grepl("济宁市开发区",address)|
+                        grepl("济宁市西郊开发区",address)|
+                        grepl("太白湖",address)|
+                        grepl("柳行",address)|
+                        grepl("洸河",address)|
+                        grepl("北湖旅游度假区",address)|
+                        grepl("许庄",address)|
+                        grepl("阜桥",address)|
+                        grepl("长沟",address)|
+                        grepl("观音阁",address)|
+                        grepl("仙营",address)|
+                        grepl("李营",address)|
+                        grepl("仙营",address)|
+                        grepl("喻屯",address)|
+                          (grepl("南苑",address)&!grepl("南关南苑",address))|
+                        grepl("古槐",address)|
+                        grepl("金城",address)|
+                        grepl("越河",address)|
+                        grepl("济阳",address)|
+                        grepl("安居",address)|
+                        grepl("南张",address)|
+                        grepl("唐口",address)|
+                        grepl("二十里铺",address)|
+                        grepl("兖州",address)|
+                        grepl("鼓楼",address)|
+                        grepl("龙桥",address)|
+                        grepl("酒仙桥",address)|
+                        grepl("王因",address)|
+                        grepl("黄屯",address)|
+                        grepl("新兖",address)|
+                        grepl("兴隆庄",address)|
+                        grepl("大安",address)|
+                        grepl("漕河",address)|
+                        grepl("小孟",address)|
+                        grepl("新驿",address)|
+                        grepl("颜店",address)
+                          
+                         |grepl("吉祥小区",address)|
+                          grepl("开泰花园",address)|
+                          grepl("长安花园",address)|
+                          grepl("凤凰城",address)|
+                          grepl("阳光花园",address)|
+                          grepl("来鹤小区",address)|
+                          grepl("红星小区",address)|
+                          grepl("罗马假日",address)|
+                          grepl("菱花小区",address)|
+                        grepl("杨柳国际",address)|
+                          
+                          grepl("开泰花园",address)|
+                        grepl("运河小区",address)|
+                        grepl("太白小区",address)|
+                        grepl("凤凰城",address)|
+                        grepl("东发小区",address)|
+                        grepl("三里营",address)|
+                        grepl("税务街",address)|
+                        grepl("贵和苑小区",address)|
+                        grepl("火车站",address)|
+                        grepl("济宁复兴街",address)|
+                        grepl("吴泰闸路",address)|
+                        grepl("铁塔寺",address)|
+                        grepl("菱花集团有限公司",address)|
+                        grepl("煤化实业公司",address)|
+                        grepl("人民医院",address)|
+                        grepl("附属医院 ",address)|
+                        grepl("鲁抗 ",address)|
+                        grepl("如意家园",address)
+### don't group non-Jining cities into urban
+                        #   |grepl("青岛",address)|
+                        #   grepl("济南",address)|
+                        #   grepl("市区",address)|
+                        #   grepl("大连",address)|
+                        #   grepl("沈阳",address)|
+                        #   grepl("成都",address)|
+                        #   grepl("宝鸡",address)|
+                        #   grepl("拉萨",address)|
+                        #   grepl("通化",address)|
+                        #   grepl("天津",address)|
+                        #   grepl("临沂",address)|
+                        #   grepl("大同",address)|
+                        #   grepl("郑州",address)|
+                        #   grepl("合肥",address)|
+                        #   grepl("佛山",address)|
+                        #   grepl("张掖",address)|
+                        #   grepl("濮阳",address)|
+                        #   grepl("吉安",address)|
+                        #   grepl("胶南",address)|
+                        #   grepl("齐齐哈尔",address)|
+                        #   grepl("聊城",address)|
+                        #   grepl("泰安",address)|
+                        #   grepl("平度",address)|
+                        #   grepl("潍坊",address)|
+                        #   grepl("烟台",address)|
+                        #   grepl("西安",address)|
+                        #   grepl("菏泽",address)|
+                        #   grepl("南京",address)|
+                        #   grepl("杭州",address)|
+                        #   grepl("徐州",address)
+                        #   |address=="山东省济宁"
+                        # |address=="山东济宁"
+                        # |address=="山东济宁市"
+                        ,1,urban))
+
+```
+
+```{r descriptive charts}
+# urban/rural
+## get rid of NA's in urban first
+subset(datOBp, !is.na(urban)) %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, urban) %>% 
+  count(time) -> datObIN.urban
+
+# june and july 2021 are very low because of opening new sub-hospital
+# impute with average of may and aug 2021
+datObIN.urban$n <- with(datObIN.urban, ifelse(urban==1 & year==2021 & month==6 | urban==1 & year==2021 & month==7,
+                                  round((datObIN.urban$n[datObIN.urban$urban==1 & 
+                                                           datObIN.urban$year==2021 & 
+                                                           datObIN.urban$month==5] +
+                                         datObIN.urban$n[datObIN.urban$urban==1 &
+                                                           datObIN.urban$year==2021 & 
+                                                           datObIN.urban$month==8]) / 2, 0), 
+                                  n))
+datObIN.urban$n <- with(datObIN.urban, ifelse(urban==0 & year==2021 & month==6 | urban==0 & year==2021 & month==7,
+                                  round((datObIN.urban$n[datObIN.urban$urban==0 & 
+                                                           datObIN.urban$year==2021 & 
+                                                           datObIN.urban$month==5] +
+                                         datObIN.urban$n[datObIN.urban$urban==0 &
+                                                           datObIN.urban$year==2021 & 
+                                                           datObIN.urban$month==8]) / 2, 0), 
+                                  n))
+
+```
+
+```{r table 1}
+# table 1
+
+## total patients
+with(subset(datObIN.urban, year>=2017 & urban==0), sum(n))
+with(subset(datObIN.urban, year>=2017 & urban==1), sum(n))
+
+## total # patients, before Feb 2020 before pandemic
+with(subset(datObIN.urban, time1<1 & time1>=-36 & urban==0), sum(n))
+with(subset(datObIN.urban, time1<1 & time1>=-36 & urban==1), sum(n))
+
+## total # patients, starting Feb 2020 during pandemic
+with(subset(datObIN.urban, time1>=1 & urban==0), sum(n))
+with(subset(datObIN.urban, time1>=1 & urban==1), sum(n))
+
+```
+
+
+````{r}
+# initial chart of # cases by month and residence; just raw data (2017-2021)
+ggplot(data = datObIN.urban, aes(x = time, y = n, group = as.factor(urban), color = as.factor(urban))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Obstetric inpatient admissions by residence (Jan 2017-May 2021)") +
+      labs(x = "Time", y = "Number of obstetric admissions", color="Residence") +
+      scale_color_hue(labels = c("Rural","Urban")) +
+      scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=66.5, y=1300, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.urban
+pp.ObIN.urban
+
+# initial chart of natural log # cases by month and age group; just raw data (2017-2021)
+ggplot(data = datObIN.urban, aes(x = time, y = n, group = as.factor(urban), color = as.factor(urban))) +
+     geom_point() +
+     geom_line() +
+     ggtitle("Log obstetric inpatient admissions by residence (Jan 2017-May 2021)") +
+     labs(x = "Time", y = "Natural log obstetric admissions", color="Residence") +
+     scale_color_hue(labels = c("Rural","Urban")) +
+     scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+                      labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+   scale_y_continuous(trans="log10") +
+     geom_vline(xintercept = 61, linetype = "dotted") +
+   annotate(geom="text", x=66.5, y=280, label="COVID-19",size=5) +
+         expand_limits(y = 0) +
+     goldentheme +
+ theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.urban.ln
+pp.ObIN.urban.ln
+
+```
+
+### Analysis 1: interaction terms
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID_t + \beta_3 Post_t + \beta_4 Urban
+\\ + (\sum_{m=2}^{12} \gamma_m Month) \cdot Urban + \gamma_1 Time_t \cdot Urban + \gamma_2 COVID1 \cdot Urban 
+\\ + \gamma_3 COVID2_t \cdot Urban + \gamma_4 Post_t + \beta_4 Urban$$
+
+```{r model output}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.ObIN.urban <- glm.nb(n ~ time1*as.factor(urban) + COVID1*as.factor(urban) + COVID2*as.factor(urban) + post*as.factor(urban) 
+                  #  + offset(log(newborn))
+                  #  +feb+mar+apr+may+jun+jul+aug+sep+oct+nov+dec
+                  + as.factor(month)*as.factor(urban), 
+                 data = subset(datObIN.urban, year >= 2017))
+
+#summary(mod.ObIN.urban)
+lincom(mod.ObIN.urban)
+
+# Extract the fitted values from this fitted model
+datObIN.urban$fit <- NA
+datObIN.urban$fit[datObIN.urban$year>=2017] <- fitted(mod.ObIN.urban)
+
+# Use AR(1)
+coef.ObIN.urban <- coeftest(mod.ObIN.urban, vcov=NeweyWest(mod.ObIN.urban,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.urban <- matrix(, nrow = 9, ncol = 4)
+m.ObIN.urban[,1]<-exp(coef.ObIN.urban[c(2:6,18:21),1])
+m.ObIN.urban[,2]<-exp(coef.ObIN.urban[c(2:6,18:21),1]-1.96*coef.ObIN.urban[c(2:6,18:21),2])
+m.ObIN.urban[,3]<-exp(coef.ObIN.urban[c(2:6,18:21),1]+1.96*coef.ObIN.urban[c(2:6,18:21),2])
+m.ObIN.urban[,4]<-coef.ObIN.urban[c(2:6,18:21),4]
+rownames(m.ObIN.urban) <- c("time1", "urban1", "COVID1", "COVID2", "post", "time1*urban", "COVID1*urban", "COVID2*urban", "post*urban")
+colnames(m.ObIN.urban) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.urban, 5)
+```
+
+```{r model output2}
+## run the model again but change reference group to urban rather than rural to get direct estimates, 95% CI, and P for the urban group
+mod.ObIN.urban2 <- glm.nb(n ~ time1*relevel(as.factor(urban), ref = "1") + COVID1*relevel(as.factor(urban), ref = "1") + COVID2*relevel(as.factor(urban), ref = "1") + post*relevel(as.factor(urban), ref = "1") 
+                  #  + offset(log(newborn))
+                  #  +feb+mar+apr+may+jun+jul+aug+sep+oct+nov+dec
+                  + as.factor(month)*relevel(as.factor(urban), ref = "1"), 
+                 data = subset(datObIN.urban, year >= 2017))
+
+lincom(mod.ObIN.urban2)
+
+# Use AR(1)
+coef.ObIN.urban2 <- coeftest(mod.ObIN.urban2, vcov=NeweyWest(mod.ObIN.urban2,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.urban2 <- matrix(, nrow = 9, ncol = 4)
+m.ObIN.urban2[,1]<-exp(coef.ObIN.urban2[c(2:6,18:21),1])
+m.ObIN.urban2[,2]<-exp(coef.ObIN.urban2[c(2:6,18:21),1]-1.96*coef.ObIN.urban2[c(2:6,18:21),2])
+m.ObIN.urban2[,3]<-exp(coef.ObIN.urban2[c(2:6,18:21),1]+1.96*coef.ObIN.urban2[c(2:6,18:21),2])
+m.ObIN.urban2[,4]<-coef.ObIN.urban2[c(2:6,18:21),4]
+rownames(m.ObIN.urban2) <- c("time1", "urban1", "COVID1", "COVID2", "post", "time1*urban0", "COVID1*urban0", "COVID2*urban0", "post*urban0")
+colnames(m.ObIN.urban2) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.urban2, 5)
+
+```
+
+
+```{r counterfactual}
+# Counterfactual or expected Y values based on the original model
+X0.ObIN.urban <- X.ObIN.urban <- model.matrix(mod.ObIN.urban)
+X0.ObIN.urban[,c(4:6,19:21)] <- 0
+datObIN.urban$exp[datObIN.urban$year>=2017] <- as.vector(exp(X0.ObIN.urban%*%coef.ObIN.urban)) # save expected Y values to the monthly dataset
+
+```
+
+```{r OvE chart}
+### Chart for the model analysis
+# CI around the line, just for the fitted line.
+datObIN.urban$fit_up[datObIN.urban$year>=2017] <- exp(predict(mod.ObIN.urban) + 1.96*predict(mod.ObIN.urban, se.fit=T)$se.fit)
+datObIN.urban$fit_low[datObIN.urban$year>=2017] <- exp(predict(mod.ObIN.urban) - 1.96*predict(mod.ObIN.urban, se.fit=T)$se.fit)
+
+# chart of observed versus expected
+ggplot(data = datObIN.urban, aes(x = time, group = as.factor(urban))) +
+    geom_ribbon(aes(ymin = fit_low, ymax = fit_up), alpha = 0.25) +
+  geom_line(aes(y = exp, colour = "Expected")) +
+        geom_line(aes(y = fit, colour = "Fitted")) + 
+      geom_point(aes(y = n, colour = "Fitted")) +
+      labs(x = "Time", y = "Obstetric admissions", color="",
+           title = "Obstetric inpatient admissions by residence: \nObserved vs. expected (Jan 2017 - May 2021)") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=67, y=1200, label="COVID-19",size=5) +
+        annotate(geom="text", x=28, y=1170, label="Rural",size=4) +
+        annotate(geom="text", x=28, y=550, label="Urban",size=4) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.ove.urban
+pp.ObIN.ove.urban
+
+
+```
+
+```{r OvE chart log}
+#USE: log chart of observed versus expected
+ggplot() +
+  geom_vline(xintercept = 61, color = "gray", size = 2, alpha = 0.3) +
+  geom_ribbon(data = datObIN.urban, 
+                aes(x = time, ymin = fit_low, ymax = fit_up, 
+                    fill = as.factor(urban)), 
+                    alpha = 0.2) +
+  geom_line(data = datObIN.urban,
+            aes(x = time, y = exp, 
+                color = as.factor(urban)), 
+            linetype = "dashed") +
+  geom_line(data = datObIN.urban,
+            aes(x = time, y = fit, color = as.factor(urban))) + 
+  geom_point(data = datObIN.urban,
+             aes(x = time, y = n, color = as.factor(urban)), size=1) +
+  scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "Time", y = "Obstetric admissions (ticks placed on log scale)", color="",
+           title = "Obstetric admissions by residence: \nFactual vs. counterfactual (Jan 2017 - Dec 2021)") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+    annotate(geom="text", x=67, y=1220, label="COVID-19",size=5) +
+      annotate(geom="text", x=28, y=1180, label="Rural",size=4) +
+        annotate(geom="text", x=28, y=550, label="Urban",size=4) +
+     scale_y_continuous(trans="log10") +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) +
+  theme(legend.position = "none") -> pp.ObIN.ove.urban.ln
+pp.ObIN.ove.urban.ln
+
+```
+
+
+```{r impute, eval=F}
+### use age, occupation to predict the probability of urban=NA
+## Y/N urban = NA
+datOBp$urbanNA <- with(datOBp, ifelse(is.na(urban), 1, 0))
+
+## length of hospitalization
+datOBp$length <- with(datOBp, as.numeric(as.Date(discharge, "%m/%d/%y") - as.Date(admission, "%m/%d/%y")))
+
+## newly grouped job variable
+datOBp$jobrg <- recode(datOBp$job, 农民 = "农民", 
+                       销售 = "职工",
+                       设计师 = "职工",
+                       专业技术人员 = "职工",
+                       企业管理人员 = "职工", 
+                       会计 = "职工", 
+                       公务员 = "职工", 
+                       医护人员 = "职工", 
+                       医务人员 = "职工",
+                       医务工作者 = "职工",
+                       医生 = "职工", 
+                       医技人员 = "职工", 
+                       医疗技术人员 = "职工",
+                       医师 = "职工",
+                       口腔医师 = "职工",
+                       后勤工作人员 = "职工",
+                       助产士 = "职工",
+                       厨师 = "职工", 
+                       商场职工 = "职工",
+                       国家公务员 = "职工", 
+                       培训师 = "职工",
+                       室内设计 = "职工",
+                       导游 = "职工",
+                       市场杀鸡人员 = "职工",
+                       工人 = "职工", 
+                       护士 = "职工", 
+                       教师 = "职工", 
+                       幼师 = "职工",
+                       广联职员 = "职工",
+                       建造师 = "职工",
+                       律师 = "职工",技师 = "职工",护士 = "职工",招标代理 = "职工",政府工作人员 = "职工",服装厂职工 = "职工",本院职工 = "职工",演员 = "其他",物业公司职工 = "职工",现役军人 = "其他",珠宝销售人员 = "职工",生物研发 = "职工",纺织工人 = "职工",纺织职工 = "职工",缝纫人员 = "职工",美容专业人员 = "职工",美容师 = "职工",美容行业 = "职工",药剂师 = "职工",药师 = "职工",营销 = "职工",行政人员 = "职工",记者 = "职工",辅警 = "职工",金融 = "职工",银座工作 = "职工",银座工作人员 = "职工",银行 = "职工",银行工作人员 = "职工",销售 = "职工",销售人员 = "职工",零售 = "职工",预算员 = "职工",餐饮 = "职工",鲁西煤矿 = "职工",
+                       职员 = "职工", 
+                       职工 = "职工", 
+                       其他 = "其他",
+                       个体 = "其他",
+                       个体经营者 = "其他",
+                       个体经营人员 = "其他",
+                       自由职业 = "其他",
+                       自由职业者 = "其他",
+                       自由工作者 = "其他",
+                       无 = "无业",
+                       无业 = "无业",
+                       无业人员 = "无业",
+                       退休工人 = "退(离)休人员",
+                       学生 = "学生")
+
+model2.OBp <- glm(as.factor(urban) ~ age + as.factor(jobrg) + length, data = datOBp, family = binomial)
+summary(model2.OBp)
+
+newds.OBp <- subset(datOBp[,c("urban","age","jobrg","length")], is.na(urban))
+prediction.OBp <- predict(model2.OBp, type = c("response"))
+
+
+library(pROC)
+g <- roc(urban ~ prediction.OBp, data = subset(datOBp, !is.na(urban) & !is.na(jobrg) & !is.na(age) & !is.na(length)))
+plot(g)
+
+
+prediction.OBp2 <- predict(model2.OBp, newdata=newds.OBp, type = c("response"))
+
+## create new urban variable waiting to be imputed for the originally NA values
+datOBp$urbannew <- datOBp$urban
+
+## impute the predicted urban values to previously NA values
+datOBp$urbannew[datOBp$urbanNA==1] <- prediction.OBp2
+## categorize the continuous predictions into urban vs. rural
+datOBp$urbannew1 <- with(datOBp, ifelse(urbannew<0.5, 0, 1))
+  
+```
+
+```{r impute chart, eval=F}
+# urban/rural with imputed data
+subset(datOBp, !is.na(urbannew1)) %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, urbannew1) %>% 
+  count(time) -> datObIN.urbannew
+
+# THIS!! initial chart of # cases by month and residence; just raw data (2017-2020)
+ggplot(data = datObIN.urbannew, aes(x = time, y = n, group = as.factor(urbannew1), color = as.factor(urbannew1))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Log obstetric inpatient admissions by residence \n(Jan 2017 - May 2021; imputed data)") +
+      labs(x = "Time", y = "Natural log of obstetric admissions", color="Residence") +
+      scale_color_hue(labels = c("Rural","Urban")) +
+      scale_x_continuous(limits=c(24,76),breaks=c(24,36,48,60,72,76),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=67.5, y=280, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+       scale_y_continuous(trans="log10") +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 8.5)) -> pp.ObIN.urbannew
+pp.ObIN.urbannew
+
+```
+
+### Analysis 2: separate models
+
+* Urban = 1 (Urban)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+
+mod.ObIN.urban1 <- glm.nb(n ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datObIN.urban, year >= 2017 & urban==1))
+
+#summary(mod.ObIN.age1)
+lincom(mod.ObIN.urban1)
+
+# Extract the fitted values from this fitted model
+# datObIN.age1$fit1 <- NA
+# datObIN.age1$fit1[datObIN.age$year>=2017 & datObIN.age$agegr==1] <- fitted(mod.ObIN.age1)
+
+# Use AR(1)
+coef.ObIN.urban1 <- coeftest(mod.ObIN.urban1, vcov=NeweyWest(mod.ObIN.urban1,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.urban1 <- matrix(, nrow = 4, ncol = 4)
+m.ObIN.urban1[,1]<-exp(coef.ObIN.urban1[c(2:5),1])
+m.ObIN.urban1[,2]<-exp(coef.ObIN.urban1[c(2:5),1]-1.96*coef.ObIN.urban1[c(2:5),2])
+m.ObIN.urban1[,3]<-exp(coef.ObIN.urban1[c(2:5),1]+1.96*coef.ObIN.urban1[c(2:5),2])
+m.ObIN.urban1[,4]<-coef.ObIN.urban1[c(2:5),4]
+rownames(m.ObIN.urban1) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.ObIN.urban1) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.urban1, 5)
+
+```
+
+* Urban = 0 (Rural)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.ObIN.urban0 <- glm.nb(n ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datObIN.urban, year >= 2017 & urban==0))
+
+#summary(mod.ObIN.age0)
+lincom(mod.ObIN.urban0)
+
+# Use AR(1)
+coef.ObIN.urban0 <- coeftest(mod.ObIN.urban0, vcov=NeweyWest(mod.ObIN.urban0,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.urban0 <- matrix(, nrow = 4, ncol = 4)
+m.ObIN.urban0[,1]<-exp(coef.ObIN.urban0[c(2:5),1])
+m.ObIN.urban0[,2]<-exp(coef.ObIN.urban0[c(2:5),1]-1.96*coef.ObIN.urban0[c(2:5),2])
+m.ObIN.urban0[,3]<-exp(coef.ObIN.urban0[c(2:5),1]+1.96*coef.ObIN.urban0[c(2:5),2])
+m.ObIN.urban0[,4]<-coef.ObIN.urban0[c(2:5),4]
+rownames(m.ObIN.urban0) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.ObIN.urban0) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.urban0, 5)
+
+```
+
+
+
+## Age Group
+
+```{r create age groups}
+# create age groups of pregnant people --> under 18, 18-34, 35 and above
+datOBp$agegr <- cut(datOBp$age, breaks = c(-Inf, 17, 34, Inf),
+                  labels = c(1, 0, 2))
+
+## what will be used: riskage==1 if age<18 (teenagers) OR age>=35; riskage==0 otherwise
+datOBp$riskage <- with(datOBp, ifelse(age<18 | age>34, 1, 0))
+
+```
+
+```{r create dataset}
+# Age groups
+datOBp %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, riskage) %>% 
+  count(time) -> datObIN.age
+
+# june and july 2021 are very low because of opening new sub-hospital
+# impute with average of may and aug 2021
+datObIN.age$n <- with(datObIN.age, ifelse(riskage==1 & year==2021 & month==6 | riskage==1 & year==2021 & month==7,
+                                  round((datObIN.age$n[datObIN.age$riskage==1 & 
+                                                           datObIN.age$year==2021 & 
+                                                           datObIN.age$month==5] +
+                                         datObIN.age$n[datObIN.age$riskage==1 &
+                                                           datObIN.age$year==2021 & 
+                                                           datObIN.age$month==8]) / 2, 0), 
+                                  n))
+datObIN.age$n <- with(datObIN.age, ifelse(riskage==0 & year==2021 & month==6 | riskage==0 & year==2021 & month==7,
+                                  round((datObIN.age$n[datObIN.age$riskage==0 & 
+                                                           datObIN.age$year==2021 & 
+                                                           datObIN.age$month==5] +
+                                         datObIN.age$n[datObIN.age$riskage==0 &
+                                                           datObIN.age$year==2021 & 
+                                                           datObIN.age$month==8]) / 2, 0), 
+                                  n))
+
+```
+
+```{r table 1}
+# table 1 
+datOBp %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, agegr) %>% 
+  count(time) -> datObIN.tab1
+
+# total patients
+with(subset(datObIN.tab1, year>=2017 & agegr==1), sum(n)) # <18
+with(subset(datObIN.tab1, year>=2017 & agegr==0), sum(n)) # 18-34
+with(subset(datObIN.tab1, year>=2017 & agegr==2), sum(n)) # >=35
+
+## total # patients, before Feb 2020 before pandemic
+with(subset(datObIN.tab1, time1<1 & time1>=-36 & agegr==1), sum(n))
+with(subset(datObIN.tab1, time1<1 & time1>=-36 & agegr==0), sum(n))
+with(subset(datObIN.tab1, time1<1 & time1>=-36 & agegr==2), sum(n))
+
+## total # patients, starting Feb 2020 during pandemic
+with(subset(datObIN.tab1, time1>=1 & agegr==1), sum(n))
+with(subset(datObIN.tab1, time1>=1 & agegr==0), sum(n))
+with(subset(datObIN.tab1, time1>=1 & agegr==2), sum(n))
+
+```
+
+
+```{r descriptive chart}
+# initial chart of # cases by month; just raw data (2017-2021)
+ggplot(data = datObIN.age, aes(x = time, y = n, group = as.factor(riskage), color = as.factor(riskage))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Obstetric inpatient admissions by age group (Jan 2017-May 2021)") +
+      labs(x = "Time", y = "Number of obstetric admissions", color="Age Group") +
+      scale_color_hue(labels = c("18-34","<18 or >=35")) +
+      scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=66.5, y=1800, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.age
+pp.ObIN.age
+
+```
+
+```{r descriptive chart log}
+# initial chart of natural log # cases by month and age group; just raw data (2017-2021)
+ggplot(data = datObIN.age, aes(x = time, y = n, group = as.factor(riskage), color = as.factor(riskage))) +
+     geom_point() +
+     geom_line() +
+     ggtitle("Log obstetric inpatient admissions by age group (Jan 2017-May 2021)") +
+     labs(x = "Time", y = "Natural log obstetric admissions", color="Age Group") +
+     scale_color_hue(labels = c("18-34","<18 or >=35")) +
+     scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+                      labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+   scale_y_continuous(trans="log10") +
+     geom_vline(xintercept = 61, linetype = "dotted") +
+   annotate(geom="text", x=66.5, y=2000, label="COVID-19",size=5) +
+         expand_limits(y = 0) +
+     goldentheme +
+ theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.age.ln
+pp.ObIN.age.ln
+
+```
+
+### Analysis 1: interaction term
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t + \beta_5 AgeGrp
+\\ + (\sum_{m=2}^{12} \gamma_m Month) \cdot AgeGrp + \gamma_1 Time_t \cdot AgeGrp + \gamma_2 COVID1 \cdot AgeGrp 
+\\ + \gamma_3 COVID2_t \cdot AgeGrp + \gamma_4 Post_t + \beta_4 AgeGrp$$
+
+```{r model output}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.ObIN.age <- glm.nb(n ~ time1*as.factor(riskage) + COVID1*as.factor(riskage) + COVID2*as.factor(riskage) + post*as.factor(riskage) 
+                  #  + offset(log(newborn))
+                  #  +feb+mar+apr+may+jun+jul+aug+sep+oct+nov+dec
+                  + as.factor(month)*as.factor(riskage), 
+                 data = subset(datObIN.age, year >= 2017))
+
+#summary(mod.ObIN.age)
+lincom(mod.ObIN.age)
+
+# Extract the fitted values from this fitted model
+datObIN.age$fit <- NA
+datObIN.age$fit[datObIN.age$year>=2017] <- fitted(mod.ObIN.age)
+
+# Use AR(1)
+coef.ObIN.age <- coeftest(mod.ObIN.age, vcov=NeweyWest(mod.ObIN.age,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.age <- matrix(, nrow = 9, ncol = 4)
+m.ObIN.age[,1]<-exp(coef.ObIN.age[c(2:6,18:21),1])
+m.ObIN.age[,2]<-exp(coef.ObIN.age[c(2:6,18:21),1]-1.96*coef.ObIN.age[c(2:6,18:21),2])
+m.ObIN.age[,3]<-exp(coef.ObIN.age[c(2:6,18:21),1]+1.96*coef.ObIN.age[c(2:6,18:21),2])
+m.ObIN.age[,4]<-coef.ObIN.age[c(2:6,18:21),4]
+rownames(m.ObIN.age) <- c("time1", "riskage1", "COVID1", "COVID2", "post", "time1*riskage", "COVID1*riskage", "COVID2*riskage", "post*riskage")
+colnames(m.ObIN.age) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.age, 5)
+
+```
+
+
+```{r counterfactual}
+# Counterfactual or expected Y values based on the original model
+X0.ObIN.age <- X.ObIN.age <- model.matrix(mod.ObIN.age)
+X0.ObIN.age[,c(4:6,19:21)] <- 0
+datObIN.age$exp[datObIN.age$year>=2017] <- as.vector(exp(X0.ObIN.age%*%coef.ObIN.age)) # save expected Y values to the monthly dataset
+
+```
+
+```{r OvE chart}
+### Chart for the model analysis
+# CI around the line, just for the fitted line.
+datObIN.age$fit_up[datObIN.age$year>=2017] <- exp(predict(mod.ObIN.age) + 1.96*predict(mod.ObIN.age, se.fit=T)$se.fit)
+datObIN.age$fit_low[datObIN.age$year>=2017] <- exp(predict(mod.ObIN.age) - 1.96*predict(mod.ObIN.age, se.fit=T)$se.fit)
+
+# chart of observed versus expected
+ggplot(data = datObIN.age, aes(x = time, group = as.factor(riskage))) +
+    geom_ribbon(aes(ymin = fit_low, ymax = fit_up), alpha = 0.15) +
+  geom_line(aes(y = exp, colour = "Expected")) +
+        geom_line(aes(y = fit, colour = "Fitted")) + 
+      geom_point(aes(y = n, colour = "Fitted")) +
+#      ggtitle("Obstetric inpatient admissions by age group: Observed vs. expected (Jan 2017 - May 2021)") +
+      labs(x = "Time", y = "Obstetric admissions", color="",
+           title = "Obstetric inpatient admissions by age group: \nObserved vs. expected (Jan 2017 - Dec 2021)") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=67, y=1900, label="COVID-19",size=5) +
+        annotate(geom="text", x=30, y=950, label="<35 year old",size=4) +
+        annotate(geom="text", x=30, y=250, label="<18 or >=35 year old",size=4) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.ove.age
+pp.ObIN.ove.age
+
+
+```
+
+```{r OvE chart log}
+# log chart of observed versus expected
+ggplot(data = datObIN.age, aes(x = time, group = as.factor(riskage))) +
+    geom_ribbon(aes(ymin = fit_low, ymax = fit_up), alpha = 0.2) +
+  geom_line(aes(y = exp, colour = "Expected")) +
+        geom_line(aes(y = fit, colour = "Fitted")) + 
+      geom_point(aes(y = n, colour = "Fitted")) +
+      labs(x = "Time", y = "Natural log of obstetric admissions", color="",
+           title = "Log obstetric inpatient admissions by age group: \nObserved vs. expected (Jan 2017 - Dec 2021)") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=66.5, y=500, label="COVID-19",size=5) +
+      annotate(geom="text", x=28, y=950, label="18-34 year old",size=4) +
+        annotate(geom="text", x=30.5, y=250, label="<18 and >=35 year old",size=4) +
+       scale_y_continuous(trans="log10") +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.ove.age.ln
+pp.ObIN.ove.age.ln
+
+```
+
+### Analysis 2: separate models
+
+* Risk age group = 1 (<18 or >=35)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+
+mod.ObIN.age1 <- glm.nb(n ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datObIN.age, year >= 2017 & riskage==1))
+
+#summary(mod.ObIN.age1)
+lincom(mod.ObIN.age1)
+
+# Extract the fitted values from this fitted model
+# datObIN.age1$fit1 <- NA
+# datObIN.age1$fit1[datObIN.age$year>=2017 & datObIN.age$agegr==1] <- fitted(mod.ObIN.age1)
+
+# Use AR(1)
+coef.ObIN.age1 <- coeftest(mod.ObIN.age1, vcov=NeweyWest(mod.ObIN.age1,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.age1 <- matrix(, nrow = 4, ncol = 4)
+m.ObIN.age1[,1]<-exp(coef.ObIN.age1[c(2:5),1])
+m.ObIN.age1[,2]<-exp(coef.ObIN.age1[c(2:5),1]-1.96*coef.ObIN.age1[c(2:5),2])
+m.ObIN.age1[,3]<-exp(coef.ObIN.age1[c(2:5),1]+1.96*coef.ObIN.age1[c(2:5),2])
+m.ObIN.age1[,4]<-coef.ObIN.age1[c(2:5),4]
+rownames(m.ObIN.age1) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.ObIN.age1) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.age1, 5)
+
+```
+
+
+* Age group = 0 (18-34)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.ObIN.age0 <- glm.nb(n ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datObIN.age, year >= 2017 & riskage==0))
+
+#summary(mod.ObIN.age0)
+lincom(mod.ObIN.age0)
+
+# Use AR(1)
+coef.ObIN.age0 <- coeftest(mod.ObIN.age0, vcov=NeweyWest(mod.ObIN.age0,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.age0 <- matrix(, nrow = 4, ncol = 4)
+m.ObIN.age0[,1]<-exp(coef.ObIN.age0[c(2:5),1])
+m.ObIN.age0[,2]<-exp(coef.ObIN.age0[c(2:5),1]-1.96*coef.ObIN.age0[c(2:5),2])
+m.ObIN.age0[,3]<-exp(coef.ObIN.age0[c(2:5),1]+1.96*coef.ObIN.age0[c(2:5),2])
+m.ObIN.age0[,4]<-coef.ObIN.age0[c(2:5),4]
+rownames(m.ObIN.age0) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.ObIN.age0) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.age0, 5)
+
+```
+
+
+
+## Risk Group
+
+### Risk group by existing health conditions
+
+```{r create risk groups}
+# create indicator for high-risk pregnancy diagnosis: 
+## age <18 or >34, primiparas or grand multiparas, previous obstetric difficulties, other medical conditions (e.g., HIV, hypertension, heart disease, diabetes, kidney disease, or mental illness such as depression), malnourishment, poverty, women who attend STI clinics, and use of cigarettes, alcohol, or other drugs - See the book chapter Family Health
+## 孕期有前置胎盘、胎盘早剥、羊水过多或过少、胎位不正、过期妊娠、胎儿发育异常、巨大胎儿、妊娠高血压综合征、骨盆狭小或畸形等异常情况；孕妇合并心脏病、慢性肾炎、糖尿病、急性传染性肝炎、肺结核、重度贫血等妊娠合并症；孕期曾服用对胎儿有影响的药物，接触过有害物质或放射线及病毒感染等不利因素。
+
+# https://www.who.int/news-room/fact-sheets/detail/maternal-mortality
+# https://www.nichd.nih.gov/health/topics/high-risk/conditioninfo/factors
+# https://www.kernodle.com/obgyn_blog/what-is-a-high-risk-pregnancy/
+
+# high risk by existing health conditions
+datOBp$risk1 <- with(datOBp, ifelse(grepl("高血压",disdiag)| # hypertension
+                                      grepl("多囊卵巢",disdiag)| # polycystic ovary syndrome
+                                      grepl("糖尿病合并妊娠",disdiag)| # existing diabetes
+                                      grepl("肾炎",disdiag)| # nephritis
+                                      grepl("肾病",disdiag)| # kidney disease
+                                      grepl("狼疮",disdiag)| # lupus
+                                      grepl("甲状腺",disdiag)| # thyroid
+                                      grepl("甲亢",disdiag)| # hyperthyroidism
+                                      grepl("肥胖症",disdiag)| # obesity
+                                      grepl("先天性心脏病",disdiag)| # congenital heart disease
+                                      grepl("肝炎",disdiag)| # hepatitis
+                                     grepl("肺结核",disdiag)| # tuberculosis
+                                      grepl("重度贫血",disdiag)| # severe anemia
+                                      grepl("精神分裂",disdiag)| # schizophrenia
+                                     grepl("抑郁",disdiag)| # depression
+                                      grepl("梅毒",disdiag)| # syphilis
+                                      grepl("衣原体",disdiag)| # chlamydia
+                                      # grepl("营养不良",disdiag)| # malnutrition
+                                      grepl("人类免疫缺陷病毒阳性",disdiag)| # HIV-positive
+                                      grepl("获得性免疫缺陷综合征",disdiag) # AIDS
+
+                                     |grepl("高血压",admdiag)|
+                                      grepl("多囊卵巢",admdiag)|
+                                      grepl("糖尿病合并妊娠",admdiag)|
+                                      grepl("肾炎",admdiag)|
+                                      grepl("肾病",admdiag)|
+                                      grepl("狼疮",admdiag)|
+                                      grepl("甲状腺",admdiag)|
+                                      grepl("甲亢",admdiag)|
+                                      grepl("肥胖症",admdiag)|
+                                      grepl("先天性心脏病",admdiag)|
+                                      grepl("肝炎",admdiag)|
+                                     grepl("肺结核",admdiag)|
+                                      grepl("重度贫血",admdiag)|
+                                      grepl("精神分裂",admdiag)|
+                                     grepl("抑郁",admdiag)|
+                                      grepl("梅毒",admdiag)|
+                                      grepl("衣原体",admdiag)|
+                                      # grepl("营养不良",admdiag)|
+                                      grepl("人类免疫缺陷病毒阳性",admdiag)| # HIV-positive
+                                      grepl("获得性免疫缺陷综合征",admdiag) # AIDS
+                                    ,1,0))
+
+```
+
+```{r create dataset}
+# Risk groups
+datOBp %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, risk1) %>% 
+  count(time) -> datObIN.risk1
+
+```
+
+```{r descriptive chart}
+# initial chart of # cases by month; just raw data (2017-2021)
+ggplot(data = datObIN.risk1, aes(x = time, y = n, group = as.factor(risk1), color = as.factor(risk1))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Obstetric inpatient admissions by risk group1 (Jan 2017-May 2021)") +
+      labs(x = "Time", y = "Number of obstetric admissions", color="Risk Group") +
+      scale_color_hue(labels = c("Low","High")) +
+      scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=66.5, y=1100, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.risk1
+pp.ObIN.risk1
+
+```
+
+```{r descriptive chart log}
+# initial chart of natural log # cases by month and age group; just raw data (2017-2021)
+ggplot(data = datObIN.risk1, aes(x = time, y = n, group = as.factor(risk1), color = as.factor(risk1))) +
+     geom_point() +
+     geom_line() +
+     ggtitle("Log obstetric inpatient admissions by risk group1 (Jan 2017-May 2021)") +
+     labs(x = "Time", y = "Natural log obstetric admissions", color="Risk Group") +
+     scale_color_hue(labels = c("Low","High")) +
+     scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+                      labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+   scale_y_continuous(trans="log10") +
+     geom_vline(xintercept = 61, linetype = "dotted") +
+   annotate(geom="text", x=66.5, y=2000, label="COVID-19",size=5) +
+         expand_limits(y = 0) +
+     goldentheme +
+ theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.risk1.ln
+pp.ObIN.risk1.ln
+
+```
+
+### Risk group by pregnancy conditions
+
+```{r}
+# high risk by conditions of pregnancy
+datOBp$risk2 <- with(datOBp, ifelse(grepl("双胎",disdiag)| # twin fetuses
+                                      grepl("多胎",disdiag)| # multiple fetuses
+                                      grepl("三胎",disdiag)| # three fetuses
+                                      grepl("四胎",disdiag)| # four fetuses
+                                      grepl("妊娠期糖尿病",disdiag)| # gestational diabetes
+                                      grepl("子痫",disdiag)| # preeclampsia or eclampsia
+                                      grepl("前置胎盘",disdiag)| # placenta previa
+                                      grepl("胎盘早剥",disdiag)| # placental abruption
+                                      grepl("早产",disdiag)| # preterm
+                                      grepl("异位妊娠",disdiag)| # ectopic pregnancy 宫外孕
+                                      # grepl("发育不良",disdiag)| # maldevelopment
+                                      # grepl("胎儿先天畸形",disdiag)| # birth defect
+                                      # grepl("胎儿心脏畸形",disdiag)| # heart defect at birth
+                                      grepl("巨大儿",disdiag)| # macrosomia
+                                      # grepl("脊柱裂",disdiag)| # spinal bifida
+                                      # grepl("脊柱畸形",disdiag)| # spinal defect
+                                      # grepl("脊柱侧弯",disdiag)| # congenital scoliosis
+#                                      grepl("瘢痕子宫",disdiag)| # scarred uterus
+                                      grepl("羊水过多",disdiag)| 
+                                        grepl("羊水过少",disdiag)| 
+                                            grepl("羊水偏少",disdiag)| 
+                                      grepl("胎膜早破",disdiag)| 
+                                        grepl("胎心监护异常",disdiag)|
+                                      
+                                      grepl("双胎",admdiag)| # twin fetuses
+                                      grepl("多胎",admdiag)| # multiple fetuses
+                                      grepl("三胎",admdiag)| # three fetuses
+                                      grepl("四胎",admdiag)| # four fetuses
+                                      grepl("妊娠期糖尿病",admdiag)| # gestational diabetes
+                                      grepl("子痫",admdiag)| # preeclampsia or eclampsia
+                                      grepl("前置胎盘",admdiag)| # placenta previa
+                                      grepl("胎盘早剥",admdiag)| # placental abruption
+                                      grepl("早产",admdiag)| # preterm
+                                      grepl("异位妊娠",admdiag)| # ectopic pregnancy 宫外孕
+                                      # grepl("发育不良",admdiag)| # maldevelopment
+                                      # grepl("胎儿先天畸形",admdiag)| # birth defect
+                                      # grepl("胎儿心脏畸形",admdiag)| # heart defect at birth
+                                      grepl("巨大儿",admdiag)
+                                      # |grepl("脊柱裂",admdiag)| # spinal bifida
+                                      # grepl("脊柱畸形",admdiag)| # spinal defect
+                                      # grepl("脊柱侧弯",admdiag) # congenital scoliosis
+#                                      |grepl("瘢痕子宫",admdiag) # scarred uterus
+                                     | grepl("羊水过多",admdiag)| 
+                                        grepl("羊水过少",admdiag)| 
+                                            grepl("羊水偏少",admdiag)| 
+                                      grepl("胎膜早破",admdiag)|
+                                        grepl("胎心监护异常",admdiag)
+                                    ,1,0))
+
+```
+
+```{r}
+a <- NA
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("双胎",disdiag)| # twin fetuses
+  #                                     grepl("多胎",disdiag)| # multiple fetuses
+  #                                     grepl("三胎",disdiag)| # three fetuses
+  #                                     grepl("四胎",disdiag)| # four fetuses
+                                      grepl("双胎",admdiag)| # twin fetuses
+                                      grepl("多胎",admdiag)| # multiple fetuses
+                                      grepl("三胎",admdiag)| # three fetuses
+                                      grepl("四胎",admdiag) # four fetuses
+                           ,"multiple gestations",a))
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("妊娠期糖尿病",disdiag)|
+                         grepl("妊娠期糖尿病",admdiag) # gestational diabetes
+                           ,"gestational diabetes",a)) # gestational diabetes
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("子痫",disdiag)|
+                                              grepl("子痫",admdiag)
+                           ,"preeclampsia or eclampsia",a)) # preeclampsia or eclampsia
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("前置胎盘",disdiag)| # placenta previa
+                           grepl("前置胎盘",admdiag),"placenta previa",a))
+          
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("胎盘早剥",disdiag)| # placental abruption
+                           grepl("胎盘早剥",admdiag),"placental abruption",a))
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("早产",disdiag)| # preterm
+                           grepl("早产",admdiag),"preterm",a))
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("异位妊娠",disdiag)| # ectopic pregnancy 宫外孕
+                                grepl("异位妊娠",admdiag), # ectopic pregnancy 宫外孕
+                         "ectopic pregnancy",a))
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("发育不良",disdiag)| # maldevelopment
+                              grepl("发育不良",admdiag), # maldevelopment
+                         "maldevelopment",a))
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("胎儿先天畸形",disdiag)| # birth defect
+                         grepl("胎儿先天畸形",admdiag),"birth defect",a))
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("胎儿心脏畸形",disdiag)| # heart defect at birth
+                           grepl("胎儿心脏畸形",admdiag),
+                         "heart defect at birth",a))
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("巨大儿",disdiag)| # macrosomia
+                          grepl("巨大儿",admdiag),"macrosomia",a))
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("脊柱裂",disdiag)| # spinal bifida
+                          grepl("脊柱裂",admdiag)| # spinal bifida
+                           grepl("脊柱畸形",disdiag)| # spinal defect
+                           grepl("脊柱畸形",admdiag)| # spinal defect
+                           grepl("脊柱侧弯",disdiag)| # congenital scoliosis
+                           grepl("脊柱侧弯",admdiag), # congenital scoliosis
+                         "spinal related",a))
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("瘢痕子宫",disdiag)| # scarred uterus
+                          grepl("瘢痕子宫",admdiag) # scarred uterus
+                                    ,"scarred uterus",a))
+
+a <- with(subset(datOBp,year>=2017), ifelse(
+  # grepl("亚临床甲状腺功能减退症",disdiag)| # thyroid
+                          grepl("甲状腺",admdiag) 
+                                    ,"thyroid",a))
+
+table(a)
+## there are so many scarred uterus
+```
+
+```{r create dataset}
+# Risk groups
+datOBp %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, risk2) %>% 
+  count(time) -> datObIN.risk2
+
+```
+
+```{r descriptive chart}
+# initial chart of # cases by month; just raw data (2017-2021)
+ggplot(data = datObIN.risk2, aes(x = time, y = n, group = as.factor(risk2), color = as.factor(risk2))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Obstetric inpatient admissions by risk group2 (Jan 2017-May 2021)") +
+      labs(x = "Time", y = "Number of obstetric admissions", color="Risk Group") +
+      scale_color_hue(labels = c("Low","High")) +
+      scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=66.5, y=1100, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.risk2
+pp.ObIN.risk2
+
+```
+
+```{r descriptive chart log}
+### NEED TO BE CHANGED
+# initial chart of natural log # cases by month and age group; just raw data (2017-2021)
+ggplot(data = datObIN.risk1, aes(x = time, y = n, group = as.factor(risk1), color = as.factor(risk1))) +
+     geom_point() +
+     geom_line() +
+     ggtitle("Log obstetric inpatient admissions by risk group1 (Jan 2017-May 2021)") +
+     labs(x = "Time", y = "Natural log obstetric admissions", color="Risk Group") +
+     scale_color_hue(labels = c("Low","High")) +
+     scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+                      labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+   scale_y_continuous(trans="log10") +
+     geom_vline(xintercept = 61, linetype = "dotted") +
+   annotate(geom="text", x=66.5, y=2000, label="COVID-19",size=5) +
+         expand_limits(y = 0) +
+     goldentheme +
+ theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.risk1.ln
+pp.ObIN.risk1.ln
+
+```
+
+```{r how to impute risk for jan-may 2021}
+## figure out the average monthly percentage of admission dx having risk factor among all admissions to and that of discharge dx having risk factor
+# riskgroup1 admdx
+datOBp$risk1.adm <- with(datOBp, ifelse(grepl("高血压",admdiag)|
+                                      grepl("多囊卵巢",admdiag)|
+                                      grepl("糖尿病合并妊娠",admdiag)|
+                                      grepl("肾炎",admdiag)|
+                                      grepl("肾病",admdiag)|
+                                      grepl("狼疮",admdiag)|
+                                      grepl("甲状腺",admdiag)|
+                                      grepl("甲亢",admdiag)|
+                                      grepl("肥胖症",admdiag)|
+                                      grepl("先天性心脏病",admdiag)|
+                                      grepl("肝炎",admdiag)|
+                                     grepl("肺结核",admdiag)|
+                                      grepl("重度贫血",admdiag)|
+                                      grepl("精神分裂",admdiag)|
+                                     grepl("抑郁",admdiag)|
+                                      grepl("梅毒",admdiag)|
+                                      grepl("衣原体",admdiag)|
+                                      # grepl("营养不良",admdiag)|
+                                      grepl("人类免疫缺陷病毒阳性",admdiag)| # HIV-positive
+                                      grepl("获得性免疫缺陷综合征",admdiag) # AIDS
+                                    ,1,0))
+
+# riskgroup1 disdx
+datOBp$risk1.disdiag <- with(datOBp, ifelse(grepl("高血压",disdiag)| # hypertension
+                                      grepl("多囊卵巢",disdiag)| # polycystic ovary syndrome
+                                      grepl("糖尿病合并妊娠",disdiag)| # existing diabetes
+                                      grepl("肾炎",disdiag)| # nephritis
+                                      grepl("肾病",disdiag)| # kidney disease
+                                      grepl("狼疮",disdiag)| # lupus
+                                      grepl("甲状腺",disdiag)| # thyroid
+                                      grepl("甲亢",disdiag)| # hyperthyroidism
+                                      grepl("肥胖症",disdiag)| # obesity
+                                      grepl("先天性心脏病",disdiag)| # congenital heart disease
+                                      grepl("肝炎",disdiag)| # hepatitis
+                                     grepl("肺结核",disdiag)| # tuberculosis
+                                      grepl("重度贫血",disdiag)| # severe anemia
+                                      grepl("精神分裂",disdiag)| # schizophrenia
+                                     grepl("抑郁",disdiag)| # depression
+                                      grepl("梅毒",disdiag)| # syphilis
+                                      grepl("衣原体",disdiag)| # chlamydia
+                                      # grepl("营养不良",disdiag)| # malnutrition
+                                      grepl("人类免疫缺陷病毒阳性",disdiag)| # HIV-positive
+                                      grepl("获得性免疫缺陷综合征",disdiag)
+                                    ,1,0))
+
+# riskgroup2 admdx
+datOBp$risk2.admdiag <- with(datOBp, ifelse(
+                                      grepl("双胎",admdiag)| # twin fetuses
+                                      grepl("多胎",admdiag)| # multiple fetuses
+                                      grepl("三胎",admdiag)| # three fetuses
+                                      grepl("四胎",admdiag)| # four fetuses
+                                      grepl("妊娠期糖尿病",admdiag)| # gestational diabetes
+                                      grepl("子痫",admdiag)| # preeclampsia or eclampsia
+                                      grepl("前置胎盘",admdiag)| # placenta previa
+                                      grepl("胎盘早剥",admdiag)| # placental abruption
+                                      grepl("早产",admdiag)| # preterm
+                                      grepl("异位妊娠",admdiag)| # ectopic pregnancy 宫外孕
+                                      # grepl("发育不良",admdiag)| # maldevelopment
+                                      # grepl("胎儿先天畸形",admdiag)| # birth defect
+                                      # grepl("胎儿心脏畸形",admdiag)| # heart defect at birth
+                                       grepl("巨大儿",admdiag)
+                                      # |grepl("脊柱裂",admdiag)| # spinal bifida
+                                      # grepl("脊柱畸形",admdiag)| # spinal defect
+                                      # grepl("脊柱侧弯",admdiag) # congenital scoliosis
+#                                      | grepl("瘢痕子宫",admdiag) # scarred uterus - separate this out to another sub-analysis
+                                      |grepl("羊水过多",admdiag)| 
+                                        grepl("羊水过少",admdiag)| 
+                                            grepl("羊水偏少",admdiag)| 
+                                      grepl("胎膜早破",admdiag)|
+                                        grepl("胎心监护异常",admdiag)
+                                    ,1,0))
+
+# riskgroup2 disdx
+datOBp$risk2.disdiag <- with(datOBp, ifelse(grepl("双胎",disdiag)| # twin fetuses
+                                      grepl("多胎",disdiag)| # multiple fetuses
+                                      grepl("三胎",disdiag)| # three fetuses
+                                      grepl("四胎",disdiag)| # four fetuses
+                                      grepl("妊娠期糖尿病",disdiag)| # gestational diabetes
+                                      grepl("子痫",disdiag)| # preeclampsia or eclampsia
+                                      grepl("前置胎盘",disdiag)| # placenta previa
+                                      grepl("胎盘早剥",disdiag)| # placental abruption
+                                      grepl("早产",disdiag)| # preterm
+                                      grepl("异位妊娠",disdiag)| # ectopic pregnancy 宫外孕
+                                      # grepl("发育不良",disdiag)| # maldevelopment
+                                      # grepl("胎儿先天畸形",disdiag)| # birth defect
+                                      # grepl("胎儿心脏畸形",disdiag)| # heart defect at birth
+                                      grepl("巨大儿",disdiag)| # macrosomia
+                                      # grepl("脊柱裂",disdiag)| # spinal bifida
+                                      # grepl("脊柱畸形",disdiag)| # spinal defect
+                                      # grepl("脊柱侧弯",disdiag) # congenital scoliosis
+#                                     | grepl("瘢痕子宫",disdiag)
+                                      grepl("羊水过多",disdiag)| 
+                                        grepl("羊水过少",disdiag)| 
+                                          grepl("羊水偏少",disdiag)| 
+                                      grepl("胎膜早破",disdiag)|
+                                      grepl("胎心监护异常",disdiag)
+                                    ,1,0))
+
+# any of risk1 or risk2, admdiag
+datOBp$risk12.admdiag <- with(datOBp, ifelse(risk1.adm==1 | risk2.admdiag==1, 1, 0))
+
+# any of risk1 or risk2, disdiag
+datOBp$risk12.disdiag <- with(datOBp, ifelse(risk1.disdiag==1 | risk2.disdiag==1, 1, 0))
+
+# any risk, either admdiag or disdiag
+datOBp$risk12 <- with(datOBp, ifelse(risk12.admdiag==1 | risk12.disdiag==1, 1, 0))
+
+# calculate proportions: admdiag
+datOBp %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post) %>% 
+  summarize(risk.adm = mean(risk12.admdiag, na.rm=T)) -> datOBp.risk.adm
+with(datOBp.risk.adm, plot(time,risk.adm))
+
+# calculate proportions: disdiag
+datOBp %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post) %>% 
+  summarize(risk.dis = mean(risk12.disdiag, na.rm=T)) -> datOBp.risk.dis
+with(datOBp.risk.dis, plot(time,risk.dis))
+
+# calculate proportions: any risk, either adm or dis
+datOBp %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post) %>% 
+  summarize(risk12 = mean(risk12, na.rm=T)) -> datOBp.risk12
+with(datOBp.risk12, plot(time1,risk12))
+# the last chart shows that the proportion of any risk at least stayed somewhat stable from 2017 to Oct 2020.
+# we should use the proportion of any risk from Oct 2019-May 2020 to impute the number of high risk pregnancies from Oct 2020-May 2021.
+
+```
+
+
+### Impute for jan-dec 2021
+
+* use the average ratio of the ratios from jan-dec 2020 to impute for jan-may 2021
+
+We assume that this ratio of ratios will not change:
+
+(# admission diagnoses having any risk factor / # total admissions) / (# discharge diagnoses having any risk factor / # total discharges)
+
+Then use the observed # admission diagnoses having any risk factor for jan-may 2021 divide by this ratio of ratios to get the imputed # discharge diagnoses having risk factor.
+
+```{r}
+risk.admvdis <- mean(datOBp$risk12.admdiag[datOBp$time>=60 & datOBp$time<=71], na.rm=T) /
+  mean(datOBp$risk12.disdiag[datOBp$time>=60 & datOBp$time<=71], na.rm=T) # ratio of proportions in 2020
+
+# risk.admvdis19 <- mean(datOBp$risk12.admdiag[datOBp$year==2019], na.rm=T) /
+#   mean(datOBp$risk12.disdiag[datOBp$year==2019], na.rm=T) # ratio of proportions in 2019
+# 
+# risk.admvdis18 <- mean(datOBp$risk12.admdiag[datOBp$year==2018], na.rm=T) /
+#   mean(datOBp$risk12.disdiag[datOBp$year==2018], na.rm=T) # ratio of proportions in 2018
+# 
+# risk.admvdis17 <- mean(datOBp$risk12.admdiag[datOBp$year==2017], na.rm=T) /
+#   mean(datOBp$risk12.disdiag[datOBp$year==2017], na.rm=T) # ratio of proportions in 2017
+
+# divide the monthly count of admission dx having risk factor by this ratio of proportions to get the monthly count of discharge dx
+## Admission versus discharge dx having risk factor
+datOBp %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, risk12.admdiag) %>% 
+  count(time) -> datObIN.riskadm
+datOBp %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, risk12.disdiag) %>% 
+  count(time) -> datObIN.riskdis # the 2021 months do not even have any risk factors so establish rows for risk==1
+library(splitstackshape)
+expandRows(subset(datObIN.riskdis, time1>=12 & time1<=16), "COVID2", drop = FALSE) %>% 
+  group_by(time) -> datObIN.riskdis1
+datObIN.riskdis1$risk12.disdiag <- 1
+datObIN.riskdis1$n <- 0
+datObIN.riskdis <- rbind(datObIN.riskdis, datObIN.riskdis1)
+
+datObIN.riskdis$n.imp <- datObIN.riskdis$n
+datObIN.riskdis$n.imp[datObIN.riskdis$time>=72 & datObIN.riskdis$time<=76 & datObIN.riskdis$risk12.disdiag==1] <- 
+  datObIN.riskadm$n[datObIN.riskadm$time>=72 & datObIN.riskadm$time<=76 & datObIN.riskadm$risk12.admdiag==1] / risk.admvdis
+
+datObIN.riskdis$n.imp[datObIN.riskdis$time>=72 & datObIN.riskdis$time<=76 & datObIN.riskdis$risk12.disdiag==0] <- 
+  (datObIN.riskdis$n[datObIN.riskdis$time>=72 & datObIN.riskdis$time<=76 & datObIN.riskdis$risk12.disdiag==0] +
+     datObIN.riskdis$n[datObIN.riskdis$time>=72 & datObIN.riskdis$time<=76 & datObIN.riskdis$risk12.disdiag==1]) -
+  datObIN.riskdis$n.imp[datObIN.riskdis$time>=72 & datObIN.riskdis$time<=76 & datObIN.riskdis$risk12.disdiag==1]
+
+```
+
+aug-dec 2021 also needs imputing
+
+```{r}
+datObIN.riskdis$n.imp[datObIN.riskdis$time>=79 & datObIN.riskdis$time<=83 & datObIN.riskdis$risk12.disdiag==1] <- 
+  datObIN.riskadm$n[datObIN.riskadm$time>=79 & datObIN.riskadm$time<=83 & datObIN.riskadm$risk12.admdiag==1] / risk.admvdis
+
+datObIN.riskdis$n.imp[datObIN.riskdis$time>=79 & datObIN.riskdis$time<=83 & datObIN.riskdis$risk12.disdiag==0] <- 
+  (datObIN.riskdis$n[datObIN.riskdis$time>=79 & datObIN.riskdis$time<=83 & datObIN.riskdis$risk12.disdiag==0] +
+     datObIN.riskdis$n[datObIN.riskdis$time>=79 & datObIN.riskdis$time<=83 & datObIN.riskdis$risk12.disdiag==1]) -
+  datObIN.riskdis$n.imp[datObIN.riskdis$time>=79 & datObIN.riskdis$time<=83 & datObIN.riskdis$risk12.disdiag==1]
+
+```
+
+finally, impute jun-jul 2021 with means from may and aug 2021
+
+```{r}
+datObIN.riskdis$n.imp <- with(datObIN.riskdis, ifelse(risk12.disdiag==1 & year==2021 & month==6 | 
+                                                    risk12.disdiag==1 & year==2021 & month==7,
+                                  round((datObIN.riskdis$n.imp[datObIN.riskdis$risk12.disdiag==1 & 
+                                                           datObIN.riskdis$year==2021 & 
+                                                           datObIN.riskdis$month==5] +
+                                         datObIN.riskdis$n.imp[datObIN.riskdis$risk12.disdiag==1 &
+                                                           datObIN.riskdis$year==2021 & 
+                                                           datObIN.riskdis$month==8]) / 2, 0), 
+                                  n.imp))
+datObIN.riskdis$n.imp <- with(datObIN.riskdis, ifelse(risk12.disdiag==0 & year==2021 & month==6 | 
+                                            risk12.disdiag==0 & year==2021 & month==7,
+                                  round((datObIN.riskdis$n.imp[datObIN.riskdis$risk12.disdiag==0 & 
+                                                           datObIN.riskdis$year==2021 & 
+                                                           datObIN.riskdis$month==5] +
+                                         datObIN.riskdis$n.imp[datObIN.riskdis$risk12.disdiag==0 &
+                                                           datObIN.riskdis$year==2021 & 
+                                                           datObIN.riskdis$month==8]) / 2, 0), 
+                                  n.imp))
+
+```
+
+
+```{r descriptive chart}
+# initial chart of # risk factor in DISCHARGE only by month; just raw data (2017-2021)
+ggplot(data = datObIN.riskdis, aes(x = time, y = n.imp, group = as.factor(risk12.disdiag), color = as.factor(risk12.disdiag))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Obstetric inpatient admissions by risk group \nusing discharge data (Jan 2017-Dec 2021)") +
+      labs(x = "Time", y = "Number of obstetric admissions", color="Risk Group") +
+      scale_color_hue(labels = c("Low","High")) +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=66.5, y=100, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.riskdisimp
+pp.ObIN.riskdisimp
+
+```
+
+```{r}
+# initial chart of # risk factor in DISCHARGE only by month; just raw data (2017-2021)
+ggplot(data = datObIN.riskadm, aes(x = time, y = n, group = as.factor(risk12.admdiag), color = as.factor(risk12.admdiag))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Obstetric inpatient admissions by risk group \nusing admission data (Jan 2017-Dec 2021)") +
+      labs(x = "Time", y = "Number of obstetric admissions", color="Risk Group") +
+      scale_color_hue(labels = c("High","Low")) +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=66.5, y=1550, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.riskadm
+pp.ObIN.riskadm
+
+```
+
+```{r table 1}
+# table 1 
+# total patients
+with(subset(datObIN.riskdis, year>=2017 & risk12.disdiag==0), sum(n)) 
+with(subset(datObIN.riskdis, year>=2017 & risk12.disdiag==1), sum(n)) 
+
+## total # patients, before Feb 2020 before pandemic
+with(subset(datObIN.riskdis, time1<1 & time1>=-36 & risk12.disdiag==0), sum(n))
+with(subset(datObIN.riskdis, time1<1 & time1>=-36 & risk12.disdiag==1), sum(n))
+
+## total # patients, starting Feb 2020 during pandemic
+with(subset(datObIN.riskdis, time1>=1 & risk12.disdiag==0), sum(n))
+with(subset(datObIN.riskdis, time1>=1 & risk12.disdiag==1), sum(n))
+
+```
+
+
+### Analysis 1: interaction terms
+
+Using discharge diagnoses with risk factor as outcome.
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID_t + \beta_3 Post_t + \beta_4 AgeGrp
+\\ + (\sum_{m=2}^{12} \gamma_m Month) \cdot AgeGrp + \gamma_1 Time_t \cdot AgeGrp + \gamma_2 COVID1 \cdot AgeGrp 
+\\ + \gamma_3 COVID2_t \cdot AgeGrp + \gamma_4 Post_t + \beta_4 AgeGrp$$
+
+```{r model output}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.ObIN.risk <- glm.nb(round(n.imp,0) ~ time1*as.factor(risk12.disdiag) + COVID1*as.factor(risk12.disdiag) + COVID2*as.factor(risk12.disdiag) + post*as.factor(risk12.disdiag) 
+                  #  + offset(log(newborn))
+                  #  +feb+mar+apr+may+jun+jul+aug+sep+oct+nov+dec
+                  + as.factor(month)*as.factor(risk12.disdiag), 
+                 data = subset(datObIN.riskdis, year >= 2017))
+
+#summary(mod.ObIN.age)
+lincom(mod.ObIN.risk)
+
+# Extract the fitted values from this fitted model
+datObIN.riskdis$fit <- NA
+datObIN.riskdis$fit[datObIN.riskdis$year>=2017] <- fitted(mod.ObIN.risk)
+
+# Use AR(1)
+coef.ObIN.risk <- coeftest(mod.ObIN.risk, vcov=NeweyWest(mod.ObIN.risk,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.risk <- matrix(, nrow = 9, ncol = 4)
+m.ObIN.risk[,1]<-exp(coef.ObIN.risk[c(2:6,18:21),1])
+m.ObIN.risk[,2]<-exp(coef.ObIN.risk[c(2:6,18:21),1]-1.96*coef.ObIN.risk[c(2:6,18:21),2])
+m.ObIN.risk[,3]<-exp(coef.ObIN.risk[c(2:6,18:21),1]+1.96*coef.ObIN.risk[c(2:6,18:21),2])
+m.ObIN.risk[,4]<-coef.ObIN.risk[c(2:6,18:21),4]
+rownames(m.ObIN.risk) <- c("time1", "risk1", "COVID1", "COVID2", "post", "time1*risk1", "COVID1*risk1", "COVID2*risk1", "post*risk1")
+colnames(m.ObIN.risk) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.risk, 5)
+
+```
+
+```{r counterfactual}
+# Counterfactual or expected Y values based on the original model
+X0.ObIN.risk <- X.ObIN.risk <- model.matrix(mod.ObIN.risk)
+X0.ObIN.risk[,4:6] <- 0
+datObIN.riskdis$exp[datObIN.riskdis$year>=2017] <- as.vector(exp(X0.ObIN.risk%*%coef.ObIN.risk)) # save expected Y values to the monthly dataset
+
+```
+
+```{r OvE chart}
+### Chart for the model analysis
+# CI around the line, just for the fitted line.
+datObIN.riskdis$fit_up[datObIN.riskdis$year>=2017] <- exp(predict(mod.ObIN.risk) + 1.96*predict(mod.ObIN.risk, se.fit=T)$se.fit)
+datObIN.riskdis$fit_low[datObIN.riskdis$year>=2017] <- exp(predict(mod.ObIN.risk) - 1.96*predict(mod.ObIN.risk, se.fit=T)$se.fit)
+
+# chart of observed versus expected
+ggplot(data = datObIN.riskdis, aes(x = time, group = as.factor(risk12.disdiag))) +
+    geom_ribbon(aes(ymin = fit_low, ymax = fit_up), alpha = 0.15) +
+  geom_line(aes(y = exp, colour = "Expected")) +
+        geom_line(aes(y = fit, colour = "Fitted")) + 
+      geom_point(aes(y = n.imp, colour = "Fitted")) +
+#      ggtitle("Obstetric inpatient admissions by age group: Observed vs. expected (Jan 2017 - May 2021)") +
+      labs(x = "Time", y = "Obstetric admissions", color="",
+           title = "Obstetric inpatient admissions by risk group: \nObserved vs. expected (Jan 2017 - Dec 2021)") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+ #      scale_y_continuous(trans="log10") +
+    annotate(geom="text", x=67, y=1200, label="COVID-19",size=5) +
+        annotate(geom="text", x=30, y=1200, label="High risk",size=4) +
+        annotate(geom="text", x=30, y=550, label="Low risk",size=4) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.ove.risk
+pp.ObIN.ove.risk
+
+
+```
+
+```{r OvE chart log}
+# log chart of observed versus expected
+ggplot(data = datObIN.riskdis, aes(x = time, group = as.factor(risk12.disdiag))) +
+    geom_ribbon(aes(ymin = fit_low, ymax = fit_up), alpha = 0.15) +
+  geom_line(aes(y = exp, colour = "Expected")) +
+        geom_line(aes(y = fit, colour = "Fitted")) + 
+      geom_point(aes(y = n.imp, colour = "Fitted")) +
+#      ggtitle("Obstetric inpatient admissions by age group: Observed vs. expected (Jan 2017 - May 2021)") +
+      labs(x = "Time", y = "Natural log obstetric admissions", color="",
+           title = "Log obstetric inpatient admissions by risk group: \nObserved vs. expected (Jan 2017 - Dec 2021)") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+      scale_y_continuous(trans="log10") +
+    annotate(geom="text", x=67, y=1250, label="COVID-19",size=5) +
+        annotate(geom="text", x=30, y=950, label="High risk",size=4) +
+        annotate(geom="text", x=30, y=530, label="Normal",size=4) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.ove.risk.ln
+pp.ObIN.ove.risk.ln
+
+```
+
+### Analysis 2: separate models
+
+* Risk = 1 (High risk)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+
+mod.ObIN.risk1 <- glm.nb(n.imp ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datObIN.riskdis, year >= 2017 & risk12.disdiag==1))
+
+#summary(mod.ObIN.age1)
+lincom(mod.ObIN.risk1)
+
+# Extract the fitted values from this fitted model
+# datObIN.age1$fit1 <- NA
+# datObIN.age1$fit1[datObIN.age$year>=2017 & datObIN.age$agegr==1] <- fitted(mod.ObIN.age1)
+
+# Use AR(1)
+coef.ObIN.risk1 <- coeftest(mod.ObIN.risk1, vcov=NeweyWest(mod.ObIN.risk1,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.risk1 <- matrix(, nrow = 4, ncol = 4)
+m.ObIN.risk1[,1]<-exp(coef.ObIN.risk1[c(2:5),1])
+m.ObIN.risk1[,2]<-exp(coef.ObIN.risk1[c(2:5),1]-1.96*coef.ObIN.risk1[c(2:5),2])
+m.ObIN.risk1[,3]<-exp(coef.ObIN.risk1[c(2:5),1]+1.96*coef.ObIN.risk1[c(2:5),2])
+m.ObIN.risk1[,4]<-coef.ObIN.risk1[c(2:5),4]
+rownames(m.ObIN.risk1) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.ObIN.risk1) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.risk1, 5)
+
+```
+
+* Risk = 0 (Low risk)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.ObIN.risk0 <- glm.nb(n.imp ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datObIN.riskdis, year >= 2017 & risk12.disdiag==0))
+
+#summary(mod.ObIN.age0)
+lincom(mod.ObIN.risk0)
+
+# Use AR(1)
+coef.ObIN.risk0 <- coeftest(mod.ObIN.risk0, vcov=NeweyWest(mod.ObIN.risk0,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.risk0 <- matrix(, nrow = 4, ncol = 4)
+m.ObIN.risk0[,1]<-exp(coef.ObIN.risk0[c(2:5),1])
+m.ObIN.risk0[,2]<-exp(coef.ObIN.risk0[c(2:5),1]-1.96*coef.ObIN.risk0[c(2:5),2])
+m.ObIN.risk0[,3]<-exp(coef.ObIN.risk0[c(2:5),1]+1.96*coef.ObIN.risk0[c(2:5),2])
+m.ObIN.risk0[,4]<-coef.ObIN.risk0[c(2:5),4]
+rownames(m.ObIN.risk0) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.ObIN.risk0) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.risk0, 5)
+
+```
+
+### Plot all 3 sub-analysis charts in 1
+
+```{r}
+### 3 vertical
+# residence
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+  geom_ribbon(data = datObIN.urban, 
+                aes(x = time, ymin = fit_low, ymax = fit_up, 
+                    fill = as.factor(urban)), 
+                    alpha = 0.2) +
+  geom_line(data = datObIN.urban,
+            aes(x = time, y = exp, 
+                color = as.factor(urban)), 
+            linetype = "dashed") +
+  geom_line(data = datObIN.urban,
+            aes(x = time, y = fit, color = as.factor(urban))) + 
+  geom_point(data = datObIN.urban,
+             aes(x = time, y = n, color = as.factor(urban)), size=1) +
+  scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "A. Residence") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      annotate(geom="text", x=27, y=1230, label="Rural",size=4) +
+        annotate(geom="text", x=27, y=520, label="Urban",size=4) +
+     scale_y_continuous(trans="log10", breaks = c(100, 300, 1000)) +
+    expand_limits(y = c(100, 1500)) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        axis.text.x=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.urban.ln1
+pp.ObIN.ove.urban.ln1
+
+# age group
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+    geom_ribbon(data = datObIN.age,
+                aes(x = time, ymin = fit_low, ymax = fit_up,
+                    fill = as.factor(riskage)), alpha = 0.2) +
+  geom_line(data = datObIN.age,
+            aes(x = time, y = exp, color = as.factor(riskage)),
+            linetype = "dashed") +
+  geom_line(data = datObIN.age,
+            aes(x = time, y = fit, color = as.factor(riskage))) + 
+  geom_point(data = datObIN.age,
+             aes(x = time, y = n, colour = as.factor(riskage)), size=1) +
+    scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "B. Age group") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      annotate(geom="text", x=30, y=950, label="18-34 year old",size=4) +
+        annotate(geom="text", x=33.5, y=220, label="<18 and >=35 year old",size=4) +
+       scale_y_continuous(trans="log10", breaks = c(100, 300, 1000)) +
+      expand_limits(y = c(100, 1500)) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        axis.text.x=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.age.ln1
+pp.ObIN.ove.age.ln1
+
+# risk group
+## reorder the level of risk groups, making high risk the referent so it can take the red color, just for the CIs
+datObIN.riskdis.ribbon <- datObIN.riskdis
+datObIN.riskdis.ribbon$riskgrp <- with(datObIN.riskdis.ribbon, 
+                                       ifelse(risk12.disdiag==0, 1, 0))
+
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+    geom_ribbon(data = datObIN.riskdis.ribbon,
+                aes(x = time, ymin = fit_low, ymax = fit_up,
+                    fill = as.factor(riskgrp)), alpha = 0.2) +
+  geom_line(data = datObIN.riskdis,
+            aes(x = time, y = exp, color = as.factor(risk12.disdiag)),
+            linetype = "dashed") +
+        geom_line(data = datObIN.riskdis,
+            aes(x = time, y = fit, color = as.factor(risk12.disdiag))) + 
+      geom_point(data = datObIN.riskdis,
+            aes(x = time, y = n.imp, color = as.factor(risk12.disdiag)), size=1) +
+      scale_color_manual(values = c("#009E73", "#CC79A7")) +
+      labs(x = "", y = "", color="",
+           title = "C. Risk group") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      scale_y_continuous(trans="log10", breaks=c(100,300,1000)) +
+    expand_limits(y = c(100, 1500)) +
+        annotate(geom="text", x=28.5, y=920, label="High risk",size=4) +
+        annotate(geom="text", x=28.5, y=530, label="Normal",size=4) +
+      annotate(geom="text", x=67.5, y=250, label="COVID-19",size=4) +
+      goldentheme_facet +
+  theme(axis.text.x = element_text(size = 10),
+        axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.risk.ln1
+pp.ObIN.ove.risk.ln1
+
+```
+
+```{r}
+threeobsub <- plot_grid(pp.ObIN.ove.urban.ln1, pp.ObIN.ove.age.ln1, pp.ObIN.ove.risk.ln1, nrow = 3,
+          rel_heights = c(1, 1, 1.15))
+
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/ObSub3in1.pdf", width = 5, height = 8)
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/ObSub3in1.png", width = 5, height = 8)
+
+
+threeobsub
+
+```
+
+
+```{r}
+### 3 horizontal
+  # residence
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+  geom_ribbon(data = datObIN.urban, 
+                aes(x = time, ymin = fit_low, ymax = fit_up, 
+                    fill = as.factor(urban)), 
+                    alpha = 0.2) +
+  geom_line(data = datObIN.urban,
+            aes(x = time, y = exp, 
+                color = as.factor(urban)), 
+            linetype = "dashed") +
+  geom_line(data = datObIN.urban,
+            aes(x = time, y = fit, color = as.factor(urban))) + 
+  geom_point(data = datObIN.urban,
+             aes(x = time, y = n, color = as.factor(urban)), size=1) +
+  scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "A. Residence") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      annotate(geom="text", x=27, y=1195, label="Rural",size=4) +
+        annotate(geom="text", x=27, y=550, label="Urban",size=4) +
+     scale_y_continuous(trans="log10", limits = c(100,2000), breaks = c(100,300,500,1000,2000)) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.urban.ln2
+pp.ObIN.ove.urban.ln2
+
+# age group
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+    geom_ribbon(data = datObIN.age,
+                aes(x = time, ymin = fit_low, ymax = fit_up,
+                    fill = as.factor(riskage)), alpha = 0.2) +
+  geom_line(data = datObIN.age,
+            aes(x = time, y = exp, color = as.factor(riskage)),
+            linetype = "dashed") +
+  geom_line(data = datObIN.age,
+            aes(x = time, y = fit, color = as.factor(riskage))) + 
+  geom_point(data = datObIN.age,
+             aes(x = time, y = n, colour = as.factor(riskage)), size=1) +
+    scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "B. Age group") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      annotate(geom="text", x=30, y=950, label="18-34 year old",size=4) +
+        annotate(geom="text", x=33.5, y=220, label="<18 and >=35 year old",size=4) +
+       scale_y_continuous(trans="log10", limits = c(100,2000), breaks = c(100,300,500,1000,2000)) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.age.ln2
+pp.ObIN.ove.age.ln2
+
+# risk group
+## reorder the level of risk groups, making high risk the referent so it can take the red color, just for the CIs
+datObIN.riskdis.ribbon <- datObIN.riskdis
+datObIN.riskdis.ribbon$riskgrp <- with(datObIN.riskdis.ribbon, 
+                                       ifelse(risk12.disdiag==0, 1, 0))
+
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+    geom_ribbon(data = datObIN.riskdis.ribbon,
+                aes(x = time, ymin = fit_low, ymax = fit_up,
+                    fill = as.factor(riskgrp)), alpha = 0.2) +
+  geom_line(data = datObIN.riskdis,
+            aes(x = time, y = exp, color = as.factor(risk12.disdiag)),
+            linetype = "dashed") +
+        geom_line(data = datObIN.riskdis,
+            aes(x = time, y = fit, color = as.factor(risk12.disdiag))) + 
+      geom_point(data = datObIN.riskdis,
+            aes(x = time, y = n.imp, color = as.factor(risk12.disdiag)), size=1) +
+      scale_color_manual(values = c("#009E73", "#CC79A7")) +
+      labs(x = "", y = "", color="",
+           title = "C. Risk group") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      scale_y_continuous(trans="log10", limits = c(100,2000), breaks = c(100,300,500,1000,2000)) +
+        annotate(geom="text", x=28.5, y=920, label="High risk",size=4) +
+        annotate(geom="text", x=28.5, y=530, label="Normal",size=4) +
+      annotate(geom="text", x=67.5, y=250, label="COVID-19",size=4) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.risk.ln2
+pp.ObIN.ove.risk.ln2
+
+```
+
+```{r}
+threeobsub_row <- plot_grid(pp.ObIN.ove.urban.ln2, pp.ObIN.ove.age.ln2, pp.ObIN.ove.risk.ln2, nrow = 1,
+          rel_heights = c(1, 1, 1))
+
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/ObSub3in1_row.pdf", width = 21, height = 5)
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/ObSub3in1_row.png", width = 21, height = 5)
+
+threeobsub_row
+
+```
+
+
+
+## Risk groups within each age group (18-35 vs. <18 & >=35)
+
+### High risk age group
+
+```{r}
+# Other risk factors within high risk age group
+subset(datOBp, riskage==1) %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, risk12.admdiag) %>% 
+  count(time) -> datObIN.riskadm.age1
+
+subset(datOBp, riskage==1) %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, risk12.disdiag) %>% 
+  count(time) -> datObIN.riskdis.age1 # the 2021 months do not even have any risk factors so establish rows for risk==1
+
+expandRows(subset(datObIN.riskdis.age1, time1>=12 & time1<=16), "COVID2", drop = FALSE) %>% 
+  group_by(time) -> datObIN.riskdis.age11
+datObIN.riskdis.age11$risk12.disdiag <- 1
+datObIN.riskdis.age11$n <- 0
+datObIN.riskdis.age1 <- rbind(datObIN.riskdis.age11, datObIN.riskdis.age1)
+
+datObIN.riskdis.age1$n.imp <- datObIN.riskdis.age1$n
+datObIN.riskdis.age1$n.imp[datObIN.riskdis.age1$time>=72 & datObIN.riskdis.age1$time<=76 & datObIN.riskdis.age1$risk12.disdiag==1] <- 
+  datObIN.riskadm.age1$n[datObIN.riskadm.age1$time>=72 & datObIN.riskadm.age1$time<=76 & datObIN.riskadm.age1$risk12.admdiag==1] / risk.admvdis
+
+datObIN.riskdis.age1$n.imp[datObIN.riskdis.age1$time>=72 & datObIN.riskdis.age1$time<=76 & datObIN.riskdis.age1$risk12.disdiag==0] <- 
+  (datObIN.riskdis.age1$n[datObIN.riskdis.age1$time>=72 & datObIN.riskdis.age1$time<=76 & datObIN.riskdis.age1$risk12.disdiag==0] +
+     datObIN.riskdis.age1$n[datObIN.riskdis.age1$time>=72 & datObIN.riskdis.age1$time<=76 & datObIN.riskdis.age1$risk12.disdiag==1]) -
+  datObIN.riskdis.age1$n.imp[datObIN.riskdis.age1$time>=72 & datObIN.riskdis.age1$time<=76 & datObIN.riskdis.age1$risk12.disdiag==1]
+
+```
+
+aug-dec 2021 also needs imputing
+
+```{r}
+datObIN.riskdis.age1$n.imp[datObIN.riskdis.age1$time>=79 & datObIN.riskdis.age1$time<=83 & datObIN.riskdis.age1$risk12.disdiag==1] <- 
+  datObIN.riskadm.age1$n[datObIN.riskadm.age1$time>=79 & datObIN.riskadm.age1$time<=83 & datObIN.riskadm.age1$risk12.admdiag==1] / risk.admvdis
+
+datObIN.riskdis.age1$n.imp[datObIN.riskdis.age1$time>=79 & datObIN.riskdis.age1$time<=83 & datObIN.riskdis.age1$risk12.disdiag==0] <- 
+  (datObIN.riskdis.age1$n[datObIN.riskdis.age1$time>=79 & datObIN.riskdis.age1$time<=83 & datObIN.riskdis.age1$risk12.disdiag==0] +
+     datObIN.riskdis.age1$n[datObIN.riskdis.age1$time>=79 & datObIN.riskdis.age1$time<=83 & datObIN.riskdis.age1$risk12.disdiag==1]) -
+  datObIN.riskdis.age1$n.imp[datObIN.riskdis.age1$time>=79 & datObIN.riskdis.age1$time<=83 & datObIN.riskdis.age1$risk12.disdiag==1]
+
+```
+
+finally, impute jun-jul 2021 with means from may and aug 2021
+
+```{r}
+datObIN.riskdis.age1$n.imp <- with(datObIN.riskdis.age1, ifelse(risk12.disdiag==1 & year==2021 & month==6 | 
+                                                    risk12.disdiag==1 & year==2021 & month==7,
+                                  round((datObIN.riskdis.age1$n.imp[datObIN.riskdis.age1$risk12.disdiag==1 & 
+                                                           datObIN.riskdis.age1$year==2021 & 
+                                                           datObIN.riskdis.age1$month==5] +
+                                         datObIN.riskdis.age1$n.imp[datObIN.riskdis.age1$risk12.disdiag==1 &
+                                                           datObIN.riskdis.age1$year==2021 & 
+                                                           datObIN.riskdis.age1$month==8]) / 2, 0), 
+                                  n.imp))
+datObIN.riskdis.age1$n.imp <- with(datObIN.riskdis.age1, ifelse(risk12.disdiag==0 & year==2021 & month==6 | 
+                                            risk12.disdiag==0 & year==2021 & month==7,
+                                  round((datObIN.riskdis.age1$n.imp[datObIN.riskdis.age1$risk12.disdiag==0 & 
+                                                           datObIN.riskdis.age1$year==2021 & 
+                                                           datObIN.riskdis.age1$month==5] +
+                                         datObIN.riskdis.age1$n.imp[datObIN.riskdis.age1$risk12.disdiag==0 &
+                                                           datObIN.riskdis.age1$year==2021 & 
+                                                           datObIN.riskdis.age1$month==8]) / 2, 0), 
+                                  n.imp))
+
+```
+
+```{r table 1}
+# table 1 - within high-risk age group <18 & >=35
+# total patients
+round(
+  with(subset(datObIN.riskdis.age1, year>=2017 & risk12.disdiag==0), sum(n.imp)),
+  0)
+round(
+  with(subset(datObIN.riskdis.age1, year>=2017 & risk12.disdiag==1), sum(n.imp)),
+  0)
+
+## total # patients, before Feb 2020 before pandemic
+round(
+  with(subset(datObIN.riskdis.age1, time1<1 & time1>=-36 & risk12.disdiag==0),
+       sum(n.imp)),
+  0)
+round(with(subset(datObIN.riskdis.age1, time1<1 & time1>=-36 & risk12.disdiag==1),
+           sum(n.imp)),
+      0)
+
+## total # patients, starting Feb 2020 during pandemic
+round(
+  with(subset(datObIN.riskdis.age1, time1>=1 & risk12.disdiag==0), sum(n.imp)),
+  0)
+round(
+  with(subset(datObIN.riskdis.age1, time1>=1 & risk12.disdiag==1), sum(n.imp)),
+  0)
+
+```
+
+
+#### Analysis 1: interaction terms
+
+Using discharge diagnoses with risk factor as outcome.
+
+```{r model output}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.ObIN.age1.risk <- glm.nb(round(n.imp,0) ~ time1*as.factor(risk12.disdiag) + COVID1*as.factor(risk12.disdiag) + COVID2*as.factor(risk12.disdiag) + post*as.factor(risk12.disdiag) 
+                  #  + offset(log(newborn))
+                  #  +feb+mar+apr+may+jun+jul+aug+sep+oct+nov+dec
+                  + as.factor(month)*as.factor(risk12.disdiag), 
+                 data = subset(datObIN.riskdis.age1, year >= 2017))
+
+#summary(mod.ObIN.age)
+lincom(mod.ObIN.age1.risk)
+
+# Extract the fitted values from this fitted model
+datObIN.riskdis.age1$fit <- NA
+datObIN.riskdis.age1$fit[datObIN.riskdis.age1$year>=2017] <- fitted(mod.ObIN.age1.risk)
+
+# Use AR(1)
+coef.ObIN.age1.risk <- coeftest(mod.ObIN.age1.risk, vcov=NeweyWest(mod.ObIN.age1.risk,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.age1.risk <- matrix(, nrow = 9, ncol = 4)
+m.ObIN.age1.risk[,1]<-exp(coef.ObIN.age1.risk[c(2:6,18:21),1])
+m.ObIN.age1.risk[,2]<-exp(coef.ObIN.age1.risk[c(2:6,18:21),1]-1.96*coef.ObIN.age1.risk[c(2:6,18:21),2])
+m.ObIN.age1.risk[,3]<-exp(coef.ObIN.age1.risk[c(2:6,18:21),1]+1.96*coef.ObIN.age1.risk[c(2:6,18:21),2])
+m.ObIN.age1.risk[,4]<-coef.ObIN.age1.risk[c(2:6,18:21),4]
+rownames(m.ObIN.age1.risk) <- c("time1", "risk1", "COVID1", "COVID2", "post", "time1*risk1", "COVID1*risk1", "COVID2*risk1", "post*risk1")
+colnames(m.ObIN.age1.risk) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.age1.risk, 5)
+
+```
+
+```{r counterfactual}
+# Counterfactual or expected Y values based on the original model
+X0.ObIN.age1.risk <- X.ObIN.age1.risk <- model.matrix(mod.ObIN.age1.risk)
+X0.ObIN.age1.risk[,4:6] <- 0
+datObIN.riskdis.age1$exp[datObIN.riskdis.age1$year>=2017] <- as.vector(exp(X0.ObIN.age1.risk%*%coef.ObIN.age1.risk)) # save expected Y values to the monthly dataset
+
+```
+
+
+```{r OvE chart log}
+# CI around the line, just for the fitted line.
+datObIN.riskdis.age1$fit_up[datObIN.riskdis.age1$year>=2017] <- exp(predict(mod.ObIN.age1.risk) + 1.96*predict(mod.ObIN.age1.risk, se.fit=T)$se.fit)
+datObIN.riskdis.age1$fit_low[datObIN.riskdis.age1$year>=2017] <- exp(predict(mod.ObIN.age1.risk) - 1.96*predict(mod.ObIN.age1.risk, se.fit=T)$se.fit)
+
+# log chart of observed versus expected
+ggplot(data = datObIN.riskdis.age1, aes(x = time, group = as.factor(risk12.disdiag))) +
+    geom_ribbon(aes(ymin = fit_low, ymax = fit_up), alpha = 0.15) +
+  geom_line(aes(y = exp, colour = "Counterfactual")) +
+        geom_line(aes(y = fit, colour = "Fitted")) + 
+      geom_point(aes(y = n.imp, colour = "Fitted")) +
+#      ggtitle("Obstetric inpatient admissions by age group: Observed vs. expected (Jan 2017 - May 2021)") +
+      labs(x = "Time", y = "Natural log obstetric admissions", color="",
+           title = "High risk age - Log obstetric inpatient admissions by risk group: \nObserved vs. expected (Jan 2017 - Dec 2021)") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+      scale_y_continuous(trans="log10") +
+    annotate(geom="text", x=67, y=1250, label="COVID-19",size=5) +
+        annotate(geom="text", x=30, y=400, label="High risk",size=4) +
+        annotate(geom="text", x=30, y=60, label="Normal",size=4) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.ove.age1.risk.ln
+pp.ObIN.ove.age1.risk.ln
+
+```
+
+### Analysis 2: separate models
+
+* Risk = 1 (High risk)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+
+mod.ObIN.risk1 <- glm.nb(n.imp ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datObIN.riskdis, year >= 2017 & risk12.disdiag==1))
+
+#summary(mod.ObIN.age1)
+lincom(mod.ObIN.risk1)
+
+# Extract the fitted values from this fitted model
+# datObIN.age1$fit1 <- NA
+# datObIN.age1$fit1[datObIN.age$year>=2017 & datObIN.age$agegr==1] <- fitted(mod.ObIN.age1)
+
+# Use AR(1)
+coef.ObIN.risk1 <- coeftest(mod.ObIN.risk1, vcov=NeweyWest(mod.ObIN.risk1,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.risk1 <- matrix(, nrow = 4, ncol = 4)
+m.ObIN.risk1[,1]<-exp(coef.ObIN.risk1[c(2:5),1])
+m.ObIN.risk1[,2]<-exp(coef.ObIN.risk1[c(2:5),1]-1.96*coef.ObIN.risk1[c(2:5),2])
+m.ObIN.risk1[,3]<-exp(coef.ObIN.risk1[c(2:5),1]+1.96*coef.ObIN.risk1[c(2:5),2])
+m.ObIN.risk1[,4]<-coef.ObIN.risk1[c(2:5),4]
+rownames(m.ObIN.risk1) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.ObIN.risk1) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.risk1, 5)
+
+```
+
+* Risk = 0 (Low risk)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.ObIN.risk0 <- glm.nb(n.imp ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datObIN.riskdis, year >= 2017 & risk12.disdiag==0))
+
+#summary(mod.ObIN.age0)
+lincom(mod.ObIN.risk0)
+
+# Use AR(1)
+coef.ObIN.risk0 <- coeftest(mod.ObIN.risk0, vcov=NeweyWest(mod.ObIN.risk0,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.risk0 <- matrix(, nrow = 4, ncol = 4)
+m.ObIN.risk0[,1]<-exp(coef.ObIN.risk0[c(2:5),1])
+m.ObIN.risk0[,2]<-exp(coef.ObIN.risk0[c(2:5),1]-1.96*coef.ObIN.risk0[c(2:5),2])
+m.ObIN.risk0[,3]<-exp(coef.ObIN.risk0[c(2:5),1]+1.96*coef.ObIN.risk0[c(2:5),2])
+m.ObIN.risk0[,4]<-coef.ObIN.risk0[c(2:5),4]
+rownames(m.ObIN.risk0) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.ObIN.risk0) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.risk0, 5)
+
+```
+
+### Low risk age group
+
+```{r}
+# Other risk factors within high risk age group
+subset(datOBp, riskage==0) %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, risk12.admdiag) %>% 
+  count(time) -> datObIN.riskadm.age0
+
+subset(datOBp, riskage==0) %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, risk12.disdiag) %>% 
+  count(time) -> datObIN.riskdis.age0 # the 2021 months do not even have any risk factors so establish rows for risk==1
+
+expandRows(subset(datObIN.riskdis.age0, time1>=12 & time1<=16), "COVID2", drop = FALSE) %>% 
+  group_by(time) -> datObIN.riskdis.age01
+datObIN.riskdis.age01$risk12.disdiag <- 1
+datObIN.riskdis.age01$n <- 0
+datObIN.riskdis.age0 <- rbind(datObIN.riskdis.age01, datObIN.riskdis.age0)
+
+datObIN.riskdis.age0$n.imp <- datObIN.riskdis.age0$n
+datObIN.riskdis.age0$n.imp[datObIN.riskdis.age0$time>=72 & datObIN.riskdis.age0$time<=76 & datObIN.riskdis.age0$risk12.disdiag==1] <- 
+  datObIN.riskadm.age0$n[datObIN.riskadm.age0$time>=72 & datObIN.riskadm.age0$time<=76 & datObIN.riskadm.age0$risk12.admdiag==1] / risk.admvdis
+
+datObIN.riskdis.age0$n.imp[datObIN.riskdis.age0$time>=72 & datObIN.riskdis.age0$time<=76 & datObIN.riskdis.age0$risk12.disdiag==0] <- 
+  (datObIN.riskdis.age0$n[datObIN.riskdis.age0$time>=72 & datObIN.riskdis.age0$time<=76 & datObIN.riskdis.age0$risk12.disdiag==0] +
+     datObIN.riskdis.age0$n[datObIN.riskdis.age0$time>=72 & datObIN.riskdis.age0$time<=76 & datObIN.riskdis.age0$risk12.disdiag==1]) -
+  datObIN.riskdis.age0$n.imp[datObIN.riskdis.age0$time>=72 & datObIN.riskdis.age0$time<=76 & datObIN.riskdis.age0$risk12.disdiag==1]
+
+```
+
+aug-dec 2021 also needs imputing
+
+```{r}
+datObIN.riskdis.age0$n.imp[datObIN.riskdis.age0$time>=79 & datObIN.riskdis.age0$time<=83 & datObIN.riskdis.age0$risk12.disdiag==1] <- 
+  datObIN.riskadm.age0$n[datObIN.riskadm.age0$time>=79 & datObIN.riskadm.age0$time<=83 & datObIN.riskadm.age0$risk12.admdiag==1] / risk.admvdis
+
+datObIN.riskdis.age0$n.imp[datObIN.riskdis.age0$time>=79 & datObIN.riskdis.age0$time<=83 & datObIN.riskdis.age0$risk12.disdiag==0] <- 
+  (datObIN.riskdis.age0$n[datObIN.riskdis.age0$time>=79 & datObIN.riskdis.age0$time<=83 & datObIN.riskdis.age0$risk12.disdiag==0] +
+     datObIN.riskdis.age0$n[datObIN.riskdis.age0$time>=79 & datObIN.riskdis.age0$time<=83 & datObIN.riskdis.age0$risk12.disdiag==1]) -
+  datObIN.riskdis.age0$n.imp[datObIN.riskdis.age0$time>=79 & datObIN.riskdis.age0$time<=83 & datObIN.riskdis.age0$risk12.disdiag==1]
+
+```
+
+finally, impute jun-jul 2021 with means from may and aug 2021
+
+```{r}
+datObIN.riskdis.age0$n.imp <- with(datObIN.riskdis.age0, ifelse(risk12.disdiag==1 & year==2021 & month==6 | 
+                                                    risk12.disdiag==1 & year==2021 & month==7,
+                                  round((datObIN.riskdis.age0$n.imp[datObIN.riskdis.age0$risk12.disdiag==1 & 
+                                                           datObIN.riskdis.age0$year==2021 & 
+                                                           datObIN.riskdis.age0$month==5] +
+                                         datObIN.riskdis.age0$n.imp[datObIN.riskdis.age0$risk12.disdiag==1 &
+                                                           datObIN.riskdis.age0$year==2021 & 
+                                                           datObIN.riskdis.age0$month==8]) / 2, 0), 
+                                  n.imp))
+datObIN.riskdis.age0$n.imp <- with(datObIN.riskdis.age0, ifelse(risk12.disdiag==0 & year==2021 & month==6 | 
+                                            risk12.disdiag==0 & year==2021 & month==7,
+                                  round((datObIN.riskdis.age0$n.imp[datObIN.riskdis.age0$risk12.disdiag==0 & 
+                                                           datObIN.riskdis.age0$year==2021 & 
+                                                           datObIN.riskdis.age0$month==5] +
+                                         datObIN.riskdis.age0$n.imp[datObIN.riskdis.age0$risk12.disdiag==0 &
+                                                           datObIN.riskdis.age0$year==2021 & 
+                                                           datObIN.riskdis.age0$month==8]) / 2, 0), 
+                                  n.imp))
+
+```
+
+```{r table 1}
+# table 1 - within high-risk age group <18 & >=35
+# total patients
+round(
+  with(subset(datObIN.riskdis.age0, year>=2017 & risk12.disdiag==0), sum(n.imp)),
+  0)
+round(
+  with(subset(datObIN.riskdis.age0, year>=2017 & risk12.disdiag==1), sum(n.imp)),
+  0)
+
+## total # patients, before Feb 2020 before pandemic
+round(
+  with(
+    subset(datObIN.riskdis.age0, time1<1 & time1>=-36 & risk12.disdiag==0), sum(n.imp)),
+  0)
+round(
+  with(subset(datObIN.riskdis.age0, time1<1 & time1>=-36 & risk12.disdiag==1), sum(n.imp)),
+  0)
+
+## total # patients, starting Feb 2020 during pandemic
+round(
+  with(subset(datObIN.riskdis.age0, time1>=1 & risk12.disdiag==0), sum(n.imp)),
+  0)
+round(
+  with(subset(datObIN.riskdis.age0, time1>=1 & risk12.disdiag==1), sum(n.imp)),
+  0)
+
+```
+
+
+#### Analysis 1: interaction terms
+
+Using discharge diagnoses with risk factor as outcome.
+
+```{r model output}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.ObIN.age0.risk <- glm.nb(round(n.imp,0) ~ time1*as.factor(risk12.disdiag) + COVID1*as.factor(risk12.disdiag) + COVID2*as.factor(risk12.disdiag) + post*as.factor(risk12.disdiag) 
+                  #  + offset(log(newborn))
+                  #  +feb+mar+apr+may+jun+jul+aug+sep+oct+nov+dec
+                  + as.factor(month)*as.factor(risk12.disdiag), 
+                 data = subset(datObIN.riskdis.age0, year >= 2017))
+
+#summary(mod.ObIN.age)
+lincom(mod.ObIN.age0.risk)
+
+# Extract the fitted values from this fitted model
+datObIN.riskdis.age0$fit <- NA
+datObIN.riskdis.age0$fit[datObIN.riskdis.age0$year>=2017] <- fitted(mod.ObIN.age0.risk)
+
+# Use AR(1)
+coef.ObIN.age0.risk <- coeftest(mod.ObIN.age0.risk, vcov=NeweyWest(mod.ObIN.age0.risk,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.ObIN.age0.risk <- matrix(, nrow = 9, ncol = 4)
+m.ObIN.age0.risk[,1]<-exp(coef.ObIN.age0.risk[c(2:6,18:21),1])
+m.ObIN.age0.risk[,2]<-exp(coef.ObIN.age0.risk[c(2:6,18:21),1]-1.96*coef.ObIN.age0.risk[c(2:6,18:21),2])
+m.ObIN.age0.risk[,3]<-exp(coef.ObIN.age0.risk[c(2:6,18:21),1]+1.96*coef.ObIN.age0.risk[c(2:6,18:21),2])
+m.ObIN.age0.risk[,4]<-coef.ObIN.age0.risk[c(2:6,18:21),4]
+rownames(m.ObIN.age0.risk) <- c("time1", "risk1", "COVID1", "COVID2", "post", "time1*risk1", "COVID1*risk1", "COVID2*risk1", "post*risk1")
+colnames(m.ObIN.age0.risk) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.ObIN.age0.risk, 5)
+
+```
+
+```{r counterfactual}
+# Counterfactual or expected Y values based on the original model
+X0.ObIN.age0.risk <- X.ObIN.age0.risk <- model.matrix(mod.ObIN.age0.risk)
+X0.ObIN.age0.risk[,4:6] <- 0
+datObIN.riskdis.age0$exp[datObIN.riskdis.age0$year>=2017] <- as.vector(exp(X0.ObIN.age0.risk%*%coef.ObIN.age0.risk)) # save expected Y values to the monthly dataset
+
+```
+
+
+```{r OvE chart log}
+# CI around the line, just for the fitted line.
+datObIN.riskdis.age0$fit_up[datObIN.riskdis.age0$year>=2017] <- exp(predict(mod.ObIN.age0.risk) + 1.96*predict(mod.ObIN.age0.risk, se.fit=T)$se.fit)
+datObIN.riskdis.age0$fit_low[datObIN.riskdis.age0$year>=2017] <- exp(predict(mod.ObIN.age0.risk) - 1.96*predict(mod.ObIN.age0.risk, se.fit=T)$se.fit)
+
+# log chart of observed versus expected
+ggplot(data = datObIN.riskdis.age0, aes(x = time, group = as.factor(risk12.disdiag))) +
+    geom_ribbon(aes(ymin = fit_low, ymax = fit_up), alpha = 0.15) +
+  geom_line(aes(y = exp, colour = "Counterfactual")) +
+        geom_line(aes(y = fit, colour = "Fitted")) + 
+      geom_point(aes(y = n.imp, colour = "Fitted")) +
+#      ggtitle("Obstetric inpatient admissions by age group: Observed vs. expected (Jan 2017 - May 2021)") +
+      labs(x = "Time", y = "Natural log obstetric admissions", color="",
+           title = "Low risk age - Log obstetric inpatient admissions by risk group: \nObserved vs. expected (Jan 2017 - Dec 2021)") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+      scale_y_continuous(limits = c(30,1300), trans="log10", breaks = c(30,100,300,1000)) +
+    annotate(geom="text", x=67, y=1250, label="COVID-19",size=5) +
+        annotate(geom="text", x=30, y=1100, label="High risk",size=4) +
+        annotate(geom="text", x=30, y=400, label="Normal",size=4) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.ove.age0.risk.ln
+pp.ObIN.ove.age0.risk.ln
+
+```
+
+
+
+
+
+***
+
+# GYNECOLOGY
+
+```{r load data, echo=T}
+# read in data
+datGYN <- read_csv("Data/allgyn.csv")
+
+# create Time var: first ever month in dataset = 0
+datGYN$time <- (datGYN$year-2015)*12+(datGYN$month-1)
+
+# create Time1 var: 0 centered at Jan 2020 (1 time point before the pandemic actually happened in Feb 2020)
+datGYN$time1 <- datGYN$time - 60
+
+# create COVID1 var to indicate just Feb 2020 to make the drop in that month pop.
+datGYN$COVID1 <- with(datGYN, ifelse(year == 2020 & month == 2, 1, 0))
+
+# create COVID2 var to indicate the time points starting from Mar 2020. 
+datGYN$COVID2 <- with(datGYN, ifelse(time1 >= 2, 1, 0))
+
+# create Post var; 1 should start at April 2020
+datGYN$post <- with(datGYN, ifelse(time1 >= 3, (year-2020)*12+(month-3), 0))
+
+```
+
+## Residence: Urban/Rural
+
+```{r create residence groups}
+### urban rural
+datGYN$urban<-NA
+datGYN$urban<-with(datGYN, ifelse(grepl("梁山",address)|
+                        grepl("邹城",address)|
+                        grepl("巨野",address)|
+                        grepl("泗水",address)|
+                        grepl("嘉祥",address)|
+                        grepl("郓城",address)|
+                        grepl("汶上",address)|
+                        grepl("微山",address)|
+                        grepl("金乡",address)|
+                        grepl("曲阜",address)|
+                        grepl("鱼台",address)|
+                        grepl("邹城",address)|
+                        grepl("滕州",address)|
+                        grepl("李阁",address)|
+                        grepl("肖云",address)|
+                        grepl("鄄城",address)|
+                        grepl("县",address)|
+                        grepl("镇",address)|
+                        grepl("乡",address)|
+                        grepl("村",address)|
+                          grepl("疃里",address)|
+                        grepl("马庙",address)|
+                        grepl("峄山",address)| 
+                        grepl("小安山",address)| 
+                        grepl("太平",address)|
+                        grepl("峄山",address)|
+                        grepl("徐集",address)|
+                        grepl("路街",address)|
+                      grepl("马集",address),0,urban))
+
+datGYN$urban<-with(datGYN, ifelse(grepl("任城",address)|
+                        grepl("市中",address)|
+                        grepl("中区",address)|
+                        grepl("高新区",address)|
+                        grepl("济宁市开发区",address)|
+                        grepl("济宁市西郊开发区",address)|
+                        grepl("太白湖",address)|
+                        grepl("柳行",address)|
+                        grepl("洸河",address)|
+                        grepl("北湖旅游度假区",address)|
+                        grepl("许庄",address)|
+                        grepl("阜桥",address)|
+                        grepl("长沟",address)|
+                        grepl("观音阁",address)|
+                        grepl("仙营",address)|
+                        grepl("李营",address)|
+                        grepl("仙营",address)|
+                        grepl("喻屯",address)|
+                          (grepl("南苑",address)&!grepl("南关南苑",address))|
+                        grepl("古槐",address)|
+                        grepl("金城",address)|
+                        grepl("越河",address)|
+                        grepl("济阳",address)|
+                        grepl("安居",address)|
+                        grepl("南张",address)|
+                        grepl("唐口",address)|
+                        grepl("二十里铺",address)|
+                        grepl("兖州",address)|
+                        grepl("鼓楼",address)|
+                        grepl("龙桥",address)|
+                        grepl("酒仙桥",address)|
+                        grepl("王因",address)|
+                        grepl("黄屯",address)|
+                        grepl("新兖",address)|
+                        grepl("兴隆庄",address)|
+                        grepl("大安",address)|
+                        grepl("漕河",address)|
+                        grepl("小孟",address)|
+                        grepl("新驿",address)|
+                        grepl("颜店",address)
+                          
+                         |grepl("吉祥小区",address)|
+                          grepl("开泰花园",address)|
+                          grepl("长安花园",address)|
+                          grepl("凤凰城",address)|
+                          grepl("阳光花园",address)|
+                          grepl("来鹤小区",address)|
+                          grepl("红星小区",address)|
+                          grepl("罗马假日",address)|
+                          grepl("菱花小区",address)|
+                        grepl("杨柳国际",address)|
+                          
+                                                    grepl("开泰花园",address)|
+                        grepl("运河小区",address)|
+                        grepl("太白小区",address)|
+                        grepl("凤凰城",address)|
+                        grepl("东发小区",address)|
+                        grepl("三里营",address)|
+                        grepl("税务街",address)|
+                        grepl("贵和苑小区",address)|
+                        grepl("火车站",address)|
+                        grepl("济宁复兴街",address)|
+                        grepl("吴泰闸路",address)|
+                        grepl("铁塔寺",address)|
+                        grepl("菱花集团有限公司",address)|
+                        grepl("煤化实业公司",address)|
+                        grepl("人民医院",address)|
+                        grepl("附属医院 ",address)|
+                        grepl("鲁抗 ",address)|
+                        grepl("如意家园",address)
+
+### don't group non-Jining cities into urban
+                        #   |grepl("青岛",address)|
+                        #   grepl("济南",address)|
+                        #   grepl("市区",address)|
+                        #   grepl("大连",address)|
+                        #   grepl("沈阳",address)|
+                        #   grepl("成都",address)|
+                        #   grepl("宝鸡",address)|
+                        #   grepl("拉萨",address)|
+                        #   grepl("通化",address)|
+                        #   grepl("天津",address)|
+                        #   grepl("临沂",address)|
+                        #   grepl("大同",address)|
+                        #   grepl("郑州",address)|
+                        #   grepl("合肥",address)|
+                        #   grepl("佛山",address)|
+                        #   grepl("张掖",address)|
+                        #   grepl("濮阳",address)|
+                        #   grepl("吉安",address)|
+                        #   grepl("胶南",address)|
+                        #   grepl("齐齐哈尔",address)|
+                        #   grepl("聊城",address)|
+                        #   grepl("泰安",address)|
+                        #   grepl("平度",address)|
+                        #   grepl("潍坊",address)|
+                        #   grepl("烟台",address)|
+                        #   grepl("西安",address)|
+                        #   grepl("菏泽",address)|
+                        #   grepl("南京",address)|
+                        #   grepl("杭州",address)|
+                        #   grepl("徐州",address)
+                        #   |address=="山东省济宁"
+                        # |address=="山东济宁"
+                        # |address=="山东济宁市"
+                        ,1,urban))
+
+```
+
+```{r descriptive chart}
+# urban/rural
+## MUST get rid of all the NA's before converting to aggregate dataset!
+datGYN <- subset(datGYN, !is.na(time))
+
+subset(datGYN, !is.na(urban)) %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, urban) %>% 
+  count(time) -> datGynIN.urban
+
+```
+
+```{r}
+# missing data for the whole month of june 2021. need to add the rows in first.
+datGynIN.urban[nrow(datGynIN.urban)+1,] <- list(NA, 2021, 6, NA, NA, NA, NA, 0, NA)
+
+datGynIN.urban[nrow(datGynIN.urban)+1,] <- list(NA, 2021, 6, NA, NA, NA, NA, 1, NA)
+
+datGynIN.urban$time[c(167,168)] <- (datGynIN.urban$year[167]-2015)*12+(datGynIN.urban$month[167]-1)
+datGynIN.urban$time1[c(167,168)] <- datGynIN.urban$time[167] - 60
+datGynIN.urban$COVID1[c(167,168)] <- with(datGynIN.urban, ifelse(year[167] == 2020 & month[167] == 2, 1, 0))
+datGynIN.urban$COVID2[c(167,168)] <- with(datGynIN.urban, ifelse(time1[167] >= 2, 1, 0))
+datGynIN.urban$post[c(167,168)] <- with(datGynIN.urban, ifelse(time1[167] >= 3, (year[167]-2020)*12+(month[167]-3), 0))
+
+# july 2021 is exceptionally low because of move into new hospital
+## use average of may and aug 2021 to impute for june and july 2021
+datGynIN.urban$n <- with(datGynIN.urban, ifelse(urban==0 & year==2021 & month==6 | 
+                                                  urban==0 & year==2021 & month==7,
+                                    round((datGynIN.urban$n[datGynIN.urban$urban==0 & 
+                                                              datGynIN.urban$year==2021 & 
+                                                              datGynIN.urban$month==5] +
+                                         datGynIN.urban$n[datGynIN.urban$urban==0 & 
+                                                            datGynIN.urban$year==2021 & 
+                                                          datGynIN.urban$month==8]) / 2, 0), 
+                                  n))
+datGynIN.urban$n <- with(datGynIN.urban, ifelse(urban==1 & year==2021 & month==6 | 
+                                                  urban==1 & year==2021 & month==7,
+                                    round((datGynIN.urban$n[datGynIN.urban$urban==1 & 
+                                                              datGynIN.urban$year==2021 & 
+                                                              datGynIN.urban$month==5] +
+                                         datGynIN.urban$n[datGynIN.urban$urban==1 & 
+                                                            datGynIN.urban$year==2021 & 
+                                                          datGynIN.urban$month==8]) / 2, 0), 
+                                  n))
+
+```
+
+```{r table 1}
+# table 1 
+# total patients
+with(subset(datGynIN.urban, year>=2017 & urban==0), sum(n)) 
+with(subset(datGynIN.urban, year>=2017 & urban==1), sum(n)) 
+
+## total # patients, before Feb 2020 before pandemic
+with(subset(datGynIN.urban, time1<1 & time1>=-36 & urban==0), sum(n))
+with(subset(datGynIN.urban, time1<1 & time1>=-36 & urban==1), sum(n))
+
+## total # patients, starting Feb 2020 during pandemic
+with(subset(datGynIN.urban, time1>=1 & urban==0), sum(n))
+with(subset(datGynIN.urban, time1>=1 & urban==1), sum(n))
+
+```
+
+```{r}
+# THIS!! initial chart of # cases by month and residence; just raw data (2017-2020)
+ggplot(data = datGynIN.urban, aes(x = time, y = n, group = as.factor(urban), color = as.factor(urban))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Log gynocology inpatient admissions by residence (Jan 2017 - May 2021)") +
+      labs(x = "Time", y = "Natural log of gynocology admissions", color="Residence") +
+      scale_color_hue(labels = c("Rural","Urban")) +
+      scale_x_continuous(limits=c(24,83),breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=67.5, y=50, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+       scale_y_continuous(trans="log10") +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 8.5)) -> pp.GynIN.urban
+pp.GynIN.urban
+
+```
+
+NOT gonna use imputed data!
+
+```{r impute, eval=FALSE}
+### use age, occupation to predict the probability of urban=NA
+## Y/N urban = NA
+datGYN$urbanNA <- with(datGYN, ifelse(is.na(urban), 1, 0))
+
+## length of hospitalization
+datGYN$length <- with(datGYN, as.numeric(as.Date(discharge, "%m/%d/%y") - as.Date(admission, "%m/%d/%y")))
+
+## newly grouped job variable
+datGYN$jobrg <- recode(datGYN$job, 农民 = "农民", 
+                       销售 = "职工",
+                       设计师 = "职工",
+                       专业技术人员 = "职工",
+                       企业管理人员 = "职工", 
+                       会计 = "职工", 
+                       公务员 = "职工", 
+                       医护人员 = "职工", 
+                       医生 = "职工", 
+                       厨师 = "职工", 
+                       国家公务员 = "职工", 
+                       工人 = "职工", 
+                       护士 = "职工", 
+                       教师 = "职工", 
+                       纺纱厂职工 = "职工", 
+                       职员 = "职工", 
+                       职工 = "职工", 
+                       其他 = "其他",
+                       个体 = "其他",
+                       个体经营者 = "其他",
+                       自由职业 = "其他",
+                       自由职业者 = "其他",
+                       无 = "无业",
+                       无业 = "无业",
+                       无业人员 = "无业",
+                       退休工人 = "退(离)休人员",
+                       学生 = "学生")
+
+model2 <- lm(urban ~ age + as.factor(jobrg) + length, data = datGYN)
+
+newds <- subset(datGYN[,c("urban","age","jobrg","length")], is.na(urban))
+prediction <- predict(model2, newdata = newds)
+
+## create new urban variable waiting to be imputed for the originally NA values
+datGYN$urbannew <- datGYN$urban
+
+## impute the predicted urban values to previously NA values
+datGYN$urbannew[datGYN$urbanNA==1] <- prediction
+## categorize the continuous predictions into urban vs. rural
+datGYN$urbannew <- with(datGYN, ifelse(urbannew<0.5, 0, 1))
+  
+```
+
+```{r impute chart, eval=FALSE}
+# urban/rural with imputed data
+datGYN %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, urbannew) %>% 
+  count(time) -> datGynIN.urbannew
+
+# THIS!! initial chart of # cases by month and residence; just raw data (2017-2020)
+ggplot(data = datGynIN.urbannew, aes(x = time, y = n, group = as.factor(urbannew), color = as.factor(urbannew))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Log gynecology inpatient admissions by residence \n(Jan 2017 - May 2021; imputed data)") +
+      labs(x = "Time", y = "Natural log of gynocology admissions", color="Residence") +
+      scale_color_hue(labels = c("Rural","Urban")) +
+      scale_x_continuous(limits=c(24,76),breaks=c(24,36,48,60,72,76),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=67.5, y=30, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+       scale_y_continuous(trans="log10") +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 8.5)) -> pp.GynIN.urbannew
+pp.GynIN.urbannew
+
+```
+
+
+### Analysis 1: interaction terms
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t + \beta_5 Urban
+\\ + (\sum_{m=2}^{12} \gamma_m Month) \cdot Urban + \gamma_1 Time_t \cdot Urban + \gamma_2 COVID1 \cdot Urban 
+\\ + \gamma_3 COVID2_t \cdot Urban + \gamma_4 Post_t + \beta_4 Urban$$
+
+```{r model output}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.GynIN.urban <- glm.nb(n ~ time1*as.factor(urban) + COVID1*as.factor(urban) + COVID2*as.factor(urban) + post*as.factor(urban) 
+                  #  + offset(log(newborn))
+                  #  +feb+mar+apr+may+jun+jul+aug+sep+oct+nov+dec
+                  + as.factor(month)*as.factor(urban), 
+                 data = subset(datGynIN.urban, year>=2017))
+
+#summary(mod.GynIN.age)
+lincom(mod.GynIN.urban)
+
+# Extract the fitted values from this fitted model
+datGynIN.urban$fit <- NA
+datGynIN.urban$fit[datGynIN.urban$year>=2017] <- fitted(mod.GynIN.urban)
+
+# Use AR(1)
+coef.GynIN.urban <- coeftest(mod.GynIN.urban, vcov=NeweyWest(mod.GynIN.urban,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.GynIN.urban <- matrix(, nrow = 9, ncol = 4)
+m.GynIN.urban[,1]<-exp(coef.GynIN.urban[c(2:6,18:21),1])
+m.GynIN.urban[,2]<-exp(coef.GynIN.urban[c(2:6,18:21),1]-1.96*coef.GynIN.urban[c(2:6,18:21),2])
+m.GynIN.urban[,3]<-exp(coef.GynIN.urban[c(2:6,18:21),1]+1.96*coef.GynIN.urban[c(2:6,18:21),2])
+m.GynIN.urban[,4]<-coef.GynIN.urban[c(2:6,18:21),4]
+rownames(m.GynIN.urban) <- c("time1", "urban1", "COVID1", "COVID2", "post", "time1*urban", "COVID1*urban", "COVID2*urban", "post*urban")
+colnames(m.GynIN.urban) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.GynIN.urban, 5)
+
+```
+
+```{r model output2}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.GynIN.urban2 <- glm.nb(n ~ time1*relevel(as.factor(urban), ref = "1") + COVID1*relevel(as.factor(urban), ref = "1") + COVID2*relevel(as.factor(urban), ref = "1") + post*relevel(as.factor(urban), ref = "1") 
+                  #  + offset(log(newborn))
+                  #  +feb+mar+apr+may+jun+jul+aug+sep+oct+nov+dec
+                  + as.factor(month)*relevel(as.factor(urban), ref = "1"), 
+                 data = subset(datGynIN.urban, year>=2017))
+
+#summary(mod.GynIN.age)
+lincom(mod.GynIN.urban2)
+
+# Use AR(1)
+coef.GynIN.urban2 <- coeftest(mod.GynIN.urban2, vcov=NeweyWest(mod.GynIN.urban2,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.GynIN.urban2 <- matrix(, nrow = 9, ncol = 4)
+m.GynIN.urban2[,1]<-exp(coef.GynIN.urban2[c(2:6,18:21),1])
+m.GynIN.urban2[,2]<-exp(coef.GynIN.urban2[c(2:6,18:21),1]-1.96*coef.GynIN.urban2[c(2:6,18:21),2])
+m.GynIN.urban2[,3]<-exp(coef.GynIN.urban2[c(2:6,18:21),1]+1.96*coef.GynIN.urban2[c(2:6,18:21),2])
+m.GynIN.urban2[,4]<-coef.GynIN.urban2[c(2:6,18:21),4]
+rownames(m.GynIN.urban2) <- c("time1", "urban1", "COVID1", "COVID2", "post", "time1*urban0", "COVID1*urban0", "COVID2*urban0", "post*urban0")
+colnames(m.GynIN.urban2) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.GynIN.urban2, 5)
+
+```
+
+```{r counterfactual}
+# Counterfactual or expected Y values based on the original model
+X0.GynIN.urban <- X.GynIN.urban <- model.matrix(mod.GynIN.urban)
+X0.GynIN.urban[,c(4:6,19:21)] <- 0
+datGynIN.urban$exp[datGynIN.urban$year>=2017] <- as.vector(exp(X0.GynIN.urban%*%coef.GynIN.urban)) # save expected Y values to the monthly dataset
+
+```
+
+```{r OvE chart log}
+# CI around the line, just for the fitted line.
+datGynIN.urban$fit_up[datGynIN.urban$year>=2017] <- exp(predict(mod.GynIN.urban) + 1.96*predict(mod.GynIN.urban, se.fit=T)$se.fit)
+datGynIN.urban$fit_low[datGynIN.urban$year>=2017] <- exp(predict(mod.GynIN.urban) - 1.96*predict(mod.GynIN.urban, se.fit=T)$se.fit)
+
+# log chart of observed versus expected
+ggplot(data = datGynIN.urban, aes(x = time, group = as.factor(urban))) +
+    geom_ribbon(aes(ymin = fit_low, ymax = fit_up), alpha = 0.2) +
+  geom_line(aes(y = exp, colour = "Expected")) +
+        geom_line(aes(y = fit, colour = "Fitted")) + 
+      geom_point(aes(y = n, colour = "Fitted")) +
+      labs(x = "Time", y = "Natural log of gynecology admissions", color="",
+           title = "Log gynecology inpatient admissions by residence: \nObserved vs. expected (Jan 2017 - May 2021)") +
+      scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=67, y=60, label="COVID-19",size=5) +
+      annotate(geom="text", x=28, y=650, label="Rural",size=4) +
+        annotate(geom="text", x=28, y=95, label="Urban",size=4) +
+     scale_y_continuous(trans="log10") +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.GynIN.ove.urban.ln
+pp.GynIN.ove.urban.ln
+
+```
+
+
+### Analysis 2: separate models
+
+* Urban = 1 (Urban)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.GynIN.urban1 <- glm.nb(n ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datGynIN.urban, year >= 2017 & urban==1))
+
+#summary(mod.ObIN.age1)
+lincom(mod.GynIN.urban1)
+
+# Extract the fitted values from this fitted model
+# datObIN.age1$fit1 <- NA
+# datObIN.age1$fit1[datObIN.age$year>=2017 & datObIN.age$agegr==1] <- fitted(mod.ObIN.age1)
+
+# Use AR(1)
+coef.GynIN.urban1 <- coeftest(mod.GynIN.urban1, vcov=NeweyWest(mod.GynIN.urban1,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.GynIN.urban1 <- matrix(, nrow = 4, ncol = 4)
+m.GynIN.urban1[,1]<-exp(coef.GynIN.urban1[c(2:5),1])
+m.GynIN.urban1[,2]<-exp(coef.GynIN.urban1[c(2:5),1]-1.96*coef.GynIN.urban1[c(2:5),2])
+m.GynIN.urban1[,3]<-exp(coef.GynIN.urban1[c(2:5),1]+1.96*coef.GynIN.urban1[c(2:5),2])
+m.GynIN.urban1[,4]<-coef.GynIN.urban1[c(2:5),4]
+rownames(m.GynIN.urban1) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.GynIN.urban1) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.GynIN.urban1, 5)
+
+```
+
+* Urban = 0 (Rural)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.GynIN.urban0 <- glm.nb(n ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datGynIN.urban, year >= 2017 & urban==0))
+
+#summary(mod.ObIN.age0)
+lincom(mod.GynIN.urban0)
+
+# Use AR(1)
+coef.GynIN.urban0 <- coeftest(mod.GynIN.urban0, vcov=NeweyWest(mod.GynIN.urban0,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.GynIN.urban0 <- matrix(, nrow = 4, ncol = 4)
+m.GynIN.urban0[,1]<-exp(coef.GynIN.urban0[c(2:5),1])
+m.GynIN.urban0[,2]<-exp(coef.GynIN.urban0[c(2:5),1]-1.96*coef.GynIN.urban0[c(2:5),2])
+m.GynIN.urban0[,3]<-exp(coef.GynIN.urban0[c(2:5),1]+1.96*coef.GynIN.urban0[c(2:5),2])
+m.GynIN.urban0[,4]<-coef.GynIN.urban0[c(2:5),4]
+rownames(m.GynIN.urban0) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.GynIN.urban0) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.GynIN.urban0, 5)
+
+```
+
+
+## Age Group
+
+```{r create age groups}
+# create age groups --> Maybe 3 groups, 0=0-17, 1=18-54, 2=55+
+datGYN$agegr <- cut(datGYN$age, breaks = c(-Inf, 17, 54, Inf),
+                  labels = c(0, 1, 2))
+
+```
+
+```{r}
+# Age groups
+datGYN %>% 
+  group_by(time, year, month, time1, COVID1, COVID2, post, agegr) %>% 
+  count(time) -> datGynIN.age
+
+datGynIN.age$agegr <- as.numeric(as.character(datGynIN.age$agegr))
+  
+```
+
+```{r}
+# missing data for the whole month of june 2021. need to add the rows in first.
+datGynIN.age[nrow(datGynIN.age)+1,] <- list(NA, 2021, 6, NA, NA, NA, NA, 0, NA)
+datGynIN.age[nrow(datGynIN.age)+1,] <- list(NA, 2021, 6, NA, NA, NA, NA, 1, NA)
+datGynIN.age[nrow(datGynIN.age)+1,] <- list(NA, 2021, 6, NA, NA, NA, NA, 2, NA)
+
+datGynIN.age$time[c(250:252)] <- (datGynIN.age$year[250]-2015)*12+(datGynIN.age$month[250]-1)
+datGynIN.age$time1[c(250:252)] <- datGynIN.age$time[250] - 60
+datGynIN.age$COVID1[c(250:252)] <- with(datGynIN.age, ifelse(year[250] == 2020 & month[250] == 2, 1, 0))
+datGynIN.age$COVID2[c(250:252)] <- with(datGynIN.age, ifelse(time1[250] >= 2, 1, 0))
+datGynIN.age$post[c(250:252)] <- with(datGynIN.age, ifelse(time1[250] >= 3, (year[250]-2020)*12+(month[250]-3), 0))
+
+# july 2021 is exceptionally low because of move into new hospital
+## use average of may and aug 2021 to impute for june and july 2021
+datGynIN.age$n <- with(datGynIN.age, ifelse(agegr==0 & year==2021 & month==6 | 
+                                                  agegr==0 & year==2021 & month==7,
+                                    round((datGynIN.age$n[datGynIN.age$agegr==0 & 
+                                                              datGynIN.age$year==2021 & 
+                                                              datGynIN.age$month==5] +
+                                         datGynIN.age$n[datGynIN.age$agegr==0 & 
+                                                            datGynIN.age$year==2021 & 
+                                                          datGynIN.age$month==8]) / 2, 0), 
+                                  n))
+datGynIN.age$n <- with(datGynIN.age, ifelse(agegr==1 & year==2021 & month==6 | 
+                                                  agegr==1 & year==2021 & month==7,
+                                    round((datGynIN.age$n[datGynIN.age$agegr==1 & 
+                                                              datGynIN.age$year==2021 & 
+                                                              datGynIN.age$month==5] +
+                                         datGynIN.age$n[datGynIN.age$agegr==1 & 
+                                                            datGynIN.age$year==2021 & 
+                                                          datGynIN.age$month==8]) / 2, 0), 
+                                  n))
+datGynIN.age$n <- with(datGynIN.age, ifelse(agegr==2 & year==2021 & month==6 | 
+                                                  agegr==2 & year==2021 & month==7,
+                                    round((datGynIN.age$n[datGynIN.age$agegr==2 & 
+                                                              datGynIN.age$year==2021 & 
+                                                              datGynIN.age$month==5] +
+                                         datGynIN.age$n[datGynIN.age$agegr==2 & 
+                                                            datGynIN.age$year==2021 & 
+                                                          datGynIN.age$month==8]) / 2, 0), 
+                                  n))
+
+```
+
+```{r table 1}
+# table 1 
+# total patients
+with(subset(datGynIN.age, year>=2017 & agegr==0), sum(n)) # <18
+with(subset(datGynIN.age, year>=2017 & agegr==1), sum(n)) # 18-54
+with(subset(datGynIN.age, year>=2017 & agegr==2), sum(n)) # >=55
+
+## total # patients, before Feb 2020 before pandemic
+with(subset(datGynIN.age, time1<1 & time1>=-36 & agegr==0), sum(n))
+with(subset(datGynIN.age, time1<1 & time1>=-36 & agegr==1), sum(n))
+with(subset(datGynIN.age, time1<1 & time1>=-36 & agegr==2), sum(n))
+
+## total # patients, starting Feb 2020 during pandemic
+with(subset(datGynIN.age, time1>=1 & agegr==0), sum(n))
+with(subset(datGynIN.age, time1>=1 & agegr==1), sum(n))
+with(subset(datGynIN.age, time1>=1 & agegr==2), sum(n))
+
+```
+
+```{r}
+# initial chart of # cases by month and age group; just raw data (2015-2020)
+ggplot(data = datGynIN.age, aes(x = time, y = n, group = as.factor(agegr), color = as.factor(agegr))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Gynecology inpatient admissions by age group (Jan 2017 - Dec 2021)") +
+      labs(x = "Time", y = "Gynecology admissions", color = "Age Group") +
+    scale_color_hue(labels = c("<18","18-54",">=55")) +
+      scale_x_continuous(limits=c(24,83),breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=68, y=1200, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 8.5)) -> pp.GynIN.age
+pp.GynIN.age
+
+## natural log
+ggplot(data = datGynIN.age, aes(x = time, y = n, group = as.factor(agegr), color = as.factor(agegr))) +
+      geom_point() +
+      geom_line() +
+      ggtitle("Log gynecology inpatient admissions by age group (Jan 2017 - Dec 2021)") +
+      labs(x = "Time", y = "Natural log of gynecology admissions", color = "Age Group") +
+      scale_color_hue(labels = c("<18","18-54",">=55")) +
+      scale_x_continuous(limits=c(24,83),breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+  scale_y_continuous(trans="log10") +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=68.5, y=1200, label="COVID-19",size=5) +
+          expand_limits(y = 0) +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 8.5)) -> pp.GynIN.age.ln
+pp.GynIN.age.ln
+
+```
+
+### Analysis 1: interaction terms
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID_t + \beta_3 Post_t + \beta_4 AgeGrp
+\\ + (\sum_{m=2}^{12} \gamma_m Month) \cdot AgeGrp + \gamma_1 Time_t \cdot AgeGrp + \gamma_2 COVID1 \cdot AgeGrp 
+\\ + \gamma_3 COVID2_t \cdot AgeGrp + \gamma_4 Post_t + \beta_4 AgeGrp$$
+
+```{r model output}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.GynIN.age <- glm.nb(n ~ time1*as.factor(agegr) + COVID1*as.factor(agegr) + COVID2*as.factor(agegr) + post*as.factor(agegr) 
+                  #  + offset(log(newborn))
+                  #  +feb+mar+apr+may+jun+jul+aug+sep+oct+nov+dec
+                  + as.factor(month)*as.factor(agegr), 
+                 data = subset(datGynIN.age, year>=2017))
+
+#summary(mod.GynIN.age)
+lincom(mod.GynIN.age)
+
+# Extract the fitted values from this fitted model
+datGynIN.age$fit <- NA
+datGynIN.age$fit[datGynIN.age$year>=2017] <- fitted(mod.GynIN.age)
+
+# Use AR(1)
+coef.GynIN.age <- coeftest(mod.GynIN.age, vcov=NeweyWest(mod.GynIN.age,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.GynIN.age <- matrix(, nrow = 14, ncol = 4)
+m.GynIN.age[,1]<-exp(coef.GynIN.age[c(2:7,19:26),1])
+m.GynIN.age[,2]<-exp(coef.GynIN.age[c(2:7,19:26),1]-1.96*coef.GynIN.age[c(2:7,19:26),2])
+m.GynIN.age[,3]<-exp(coef.GynIN.age[c(2:7,19:26),1]+1.96*coef.GynIN.age[c(2:7,19:26),2])
+m.GynIN.age[,4]<-coef.GynIN.age[c(2:7,19:26),4]
+rownames(m.GynIN.age) <- c("time1", "agegr1", "agegr2", "COVID1", "COVID2", "post", "time1*agegr1", "time1*agegr2", "COVID1*agegr1", "COVID1*agegr2", "COVID2*agegr1", "COVID2*agegr2", "post*agegr1", "post*agegr2")
+colnames(m.GynIN.age) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.GynIN.age, 5)
+
+```
+
+```{r counterfactual}
+# Counterfactual or expected Y values based on the original model
+X0.GynIN.age <- X.GynIN.age <- model.matrix(mod.GynIN.age)
+X0.GynIN.age[,c(5:7,21:26)] <- 0
+datGynIN.age$exp[datGynIN.age$year>=2017] <- as.vector(exp(X0.GynIN.age%*%coef.GynIN.age)) # save expected Y values to the monthly dataset
+
+```
+
+```{r OvE chart log}
+### Chart for the model analysis
+# CI around the line, just for the fitted line.
+datGynIN.age$fit_up[datGynIN.age$year>=2017] <- exp(predict(mod.GynIN.age) + 1.96*predict(mod.GynIN.age, se.fit=T)$se.fit)
+datGynIN.age$fit_low[datGynIN.age$year>=2017] <- exp(predict(mod.GynIN.age) - 1.96*predict(mod.GynIN.age, se.fit=T)$se.fit)
+
+# log chart of observed versus expected
+ggplot(data = datGynIN.age, aes(x = time, group = as.factor(agegr))) +
+    geom_ribbon(aes(ymin = fit_low, ymax = fit_up), alpha = 0.15) +
+  geom_line(aes(y = exp, colour = "Expected")) +
+        geom_line(aes(y = fit, colour = "Fitted")) + 
+      geom_point(aes(y = n, colour = "Fitted")) +
+      labs(x = "Time", y = "Natural log of gynecology admissions", color="",
+           title = "Log gynecology inpatient admissions by age group: \nObserved vs. expected (Jan 2017 - Dec 2021)") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      geom_vline(xintercept = 61, linetype = "dotted") +
+    annotate(geom="text", x=67.5, y=3, label="COVID-19",size=5) +
+        annotate(geom="text", x=28, y=900, label="18-54",size=4) +
+        annotate(geom="text", x=28, y=80, label=">=55",size=4) +
+          annotate(geom="text", x=28, y=5, label="<18",size=4) +
+       scale_y_continuous(trans="log10") +
+      goldentheme +
+  theme(axis.text.x = element_text(size = 9.5)) -> pp.GynIN.ove.age.ln
+pp.GynIN.ove.age.ln
+
+```
+
+### Analysis 2: separate models
+
+* Agegr = 1 (18-54)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.GynIN.age1 <- glm.nb(n ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datGynIN.age, year >= 2017 & agegr==1))
+
+#summary(mod.ObIN.age1)
+lincom(mod.GynIN.age1)
+
+# Extract the fitted values from this fitted model
+# datObIN.age1$fit1 <- NA
+# datObIN.age1$fit1[datObIN.age$year>=2017 & datObIN.age$agegr==1] <- fitted(mod.ObIN.age1)
+
+# Use AR(1)
+coef.GynIN.age1 <- coeftest(mod.GynIN.age1, vcov=NeweyWest(mod.GynIN.age1,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.GynIN.age1 <- matrix(, nrow = 4, ncol = 4)
+m.GynIN.age1[,1]<-exp(coef.GynIN.age1[c(2:5),1])
+m.GynIN.age1[,2]<-exp(coef.GynIN.age1[c(2:5),1]-1.96*coef.GynIN.age1[c(2:5),2])
+m.GynIN.age1[,3]<-exp(coef.GynIN.age1[c(2:5),1]+1.96*coef.GynIN.age1[c(2:5),2])
+m.GynIN.age1[,4]<-coef.GynIN.age1[c(2:5),4]
+rownames(m.GynIN.age1) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.GynIN.age1) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.GynIN.age1, 5)
+
+```
+
+* Agegr = 2 (>=55)
+
+$$ ln(E(y_t)) = \alpha_0 + \sum_{m=2}^{12} \beta_m Month + \beta_1 Time_t + \beta_2 COVID1 + \beta_3 COVID2_t + \beta_4 Post_t $$
+
+```{r}
+# adjust for monthly seasonality, January as the control，no offset for newborn population becuase 2021 data are not accurate
+mod.GynIN.age2 <- glm.nb(n ~ time1 + COVID1 + COVID2 + post 
+                  + as.factor(month), 
+                 data = subset(datGynIN.age, year >= 2017 & agegr==2))
+
+#summary(mod.ObIN.age1)
+lincom(mod.GynIN.age2)
+
+# Extract the fitted values from this fitted model
+# datObIN.age1$fit1 <- NA
+# datObIN.age1$fit1[datObIN.age$year>=2017 & datObIN.age$agegr==1] <- fitted(mod.ObIN.age1)
+
+# Use AR(1)
+coef.GynIN.age2 <- coeftest(mod.GynIN.age2, vcov=NeweyWest(mod.GynIN.age2,lag=1,prewhite = F))
+
+# put coef, CI, and p-value for time1, COVID, post together
+m.GynIN.age2 <- matrix(, nrow = 4, ncol = 4)
+m.GynIN.age2[,1]<-exp(coef.GynIN.age2[c(2:5),1])
+m.GynIN.age2[,2]<-exp(coef.GynIN.age2[c(2:5),1]-1.96*coef.GynIN.age2[c(2:5),2])
+m.GynIN.age2[,3]<-exp(coef.GynIN.age2[c(2:5),1]+1.96*coef.GynIN.age2[c(2:5),2])
+m.GynIN.age2[,4]<-coef.GynIN.age2[c(2:5),4]
+rownames(m.GynIN.age2) <- c("time1", "COVID1","COVID2", "post")
+colnames(m.GynIN.age2) <- c("exp(beta)", "95%low", "95%up", "p-value")
+round(m.GynIN.age2, 5)
+
+```
+
+### Plot both sub-analysis charts in 1
+
+```{r}
+# 2 vertical
+# residence
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+  geom_ribbon(data = datGynIN.urban, 
+                aes(x = time, ymin = fit_low, ymax = fit_up, 
+                    fill = as.factor(urban)), 
+                    alpha = 0.2) +
+  geom_line(data = datGynIN.urban,
+            aes(x = time, y = exp, 
+                color = as.factor(urban)), 
+            linetype = "dashed") +
+  geom_line(data = datGynIN.urban,
+            aes(x = time, y = fit, color = as.factor(urban))) + 
+  geom_point(data = datGynIN.urban,
+             aes(x = time, y = n, color = as.factor(urban)), size=1) +
+  scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "A. Residence") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      annotate(geom="text", x=28, y=650, label="Rural",size=4) +
+        annotate(geom="text", x=28, y=95, label="Urban",size=4) +
+          annotate(geom="text", x=67.5, y=80, label="COVID-19",size=4) +
+     scale_y_continuous(trans="log10") +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        axis.text.x=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.GynIN.ove.urban.ln1
+pp.GynIN.ove.urban.ln1
+
+# age group
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+    geom_ribbon(data = datGynIN.age,
+                aes(x = time, ymin = fit_low, ymax = fit_up,
+                    fill = as.factor(agegr)), alpha = 0.2) +
+  geom_line(data = datGynIN.age,
+            aes(x = time, y = exp, color = as.factor(agegr)),
+            linetype = "dashed") +
+  geom_line(data = datGynIN.age,
+            aes(x = time, y = fit, color = as.factor(agegr))) + 
+  geom_point(data = datGynIN.age,
+             aes(x = time, y = n, colour = as.factor(agegr)), size=1) +
+    scale_color_manual(values = c("#CC79A7", "#009E73", "#000000")) +
+      labs(x = "", y = "", color="",
+           title = "B. Age group") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+        annotate(geom="text", x=28, y=900, label="18-54",size=4) +
+        annotate(geom="text", x=28, y=80, label=">=55",size=4) +
+          annotate(geom="text", x=28, y=4.5, label="<18",size=4) +
+       scale_y_continuous(trans="log10") +
+      goldentheme_facet +
+  theme(axis.text.x = element_text(size = 10),
+        axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.GynIN.ove.age.ln1
+pp.GynIN.ove.age.ln1
+
+```
+
+```{r}
+twogynsub <- plot_grid(pp.GynIN.ove.urban.ln1, pp.GynIN.ove.age.ln1, nrow = 2,
+          rel_heights = c(1, 1.15))
+
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/GynSub2in1.pdf", width = 5, height = 6)
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/GynSub2in1.png", width = 5, height = 6)
+
+twogynsub
+
+```
+
+
+```{r}
+# 2 horizontal
+# residence
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+  geom_ribbon(data = datGynIN.urban, 
+                aes(x = time, ymin = fit_low, ymax = fit_up, 
+                    fill = as.factor(urban)), 
+                    alpha = 0.2) +
+  geom_line(data = datGynIN.urban,
+            aes(x = time, y = exp, 
+                color = as.factor(urban)), 
+            linetype = "dashed") +
+  geom_line(data = datGynIN.urban,
+            aes(x = time, y = fit, color = as.factor(urban))) + 
+  geom_point(data = datGynIN.urban,
+             aes(x = time, y = n, color = as.factor(urban)), size=1) +
+  scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "A. Residence") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      annotate(geom="text", x=28, y=650, label="Rural",size=4) +
+        annotate(geom="text", x=28, y=95, label="Urban",size=4) +
+          annotate(geom="text", x=67.5, y=80, label="COVID-19",size=4) +
+     scale_y_continuous(trans="log10", limits = c(2,1000), breaks = c(10,100,500,1000)) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.GynIN.ove.urban.ln2
+pp.GynIN.ove.urban.ln2
+
+# age group
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+    geom_ribbon(data = datGynIN.age,
+                aes(x = time, ymin = fit_low, ymax = fit_up,
+                    fill = as.factor(agegr)), alpha = 0.2) +
+  geom_line(data = datGynIN.age,
+            aes(x = time, y = exp, color = as.factor(agegr)),
+            linetype = "dashed") +
+  geom_line(data = datGynIN.age,
+            aes(x = time, y = fit, color = as.factor(agegr))) + 
+  geom_point(data = datGynIN.age,
+             aes(x = time, y = n, colour = as.factor(agegr)), size=1) +
+    scale_color_manual(values = c("#CC79A7", "#009E73", "#000000")) +
+      labs(x = "", y = "", color="",
+           title = "B. Age group") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+        annotate(geom="text", x=28, y=900, label="18-54",size=4) +
+        annotate(geom="text", x=28, y=80, label=">=55",size=4) +
+          annotate(geom="text", x=28, y=4.5, label="<18",size=4) +
+       scale_y_continuous(trans="log10", limits = c(2,1000), breaks = c(10,100,500,1000)) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.GynIN.ove.age.ln2
+pp.GynIN.ove.age.ln2
+
+```
+
+```{r}
+twogynsub_row <- plot_grid(pp.GynIN.ove.urban.ln2, pp.GynIN.ove.age.ln2, nrow = 1,
+          rel_heights = c(1, 1))
+
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/GynSub2in1_row.pdf", width = 12, height = 5)
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/GynSub2in1_row.png", width = 12, height = 5)
+
+twogynsub_row
+
+```
+
+
+
+
+```{r}
+### 2 horizontal
+  # residence
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+  geom_ribbon(data = datObIN.urban, 
+                aes(x = time, ymin = fit_low, ymax = fit_up, 
+                    fill = as.factor(urban)), 
+                    alpha = 0.2) +
+  geom_line(data = datObIN.urban,
+            aes(x = time, y = exp, 
+                color = as.factor(urban)), 
+            linetype = "dashed") +
+  geom_line(data = datObIN.urban,
+            aes(x = time, y = fit, color = as.factor(urban))) + 
+  geom_point(data = datObIN.urban,
+             aes(x = time, y = n, color = as.factor(urban)), size=1) +
+  scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "A. Residence") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      annotate(geom="text", x=27, y=1195, label="Rural",size=4) +
+        annotate(geom="text", x=27, y=550, label="Urban",size=4) +
+     scale_y_continuous(trans="log10", limits = c(100,2000), breaks = c(100,300,500,1000,2000)) +
+      goldentheme_facet +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.urban.ln2
+pp.ObIN.ove.urban.ln2
+
+# age group
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+    geom_ribbon(data = datObIN.age,
+                aes(x = time, ymin = fit_low, ymax = fit_up,
+                    fill = as.factor(riskage)), alpha = 0.2) +
+  geom_line(data = datObIN.age,
+            aes(x = time, y = exp, color = as.factor(riskage)),
+            linetype = "dashed") +
+  geom_line(data = datObIN.age,
+            aes(x = time, y = fit, color = as.factor(riskage))) + 
+  geom_point(data = datObIN.age,
+             aes(x = time, y = n, colour = as.factor(riskage)), size=1) +
+    scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "B. Age group") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      annotate(geom="text", x=30, y=950, label="18-34 year old",size=4) +
+        annotate(geom="text", x=33.5, y=220, label="<18 and >=35 year old",size=4) +
+       scale_y_continuous(trans="log10", limits = c(100,2000), breaks = c(100,300,500,1000,2000)) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.age.ln2
+pp.ObIN.ove.age.ln2
+
+# risk group
+## reorder the level of risk groups, making high risk the referent so it can take the red color, just for the CIs
+datObIN.riskdis.ribbon <- datObIN.riskdis
+datObIN.riskdis.ribbon$riskgrp <- with(datObIN.riskdis.ribbon, 
+                                       ifelse(risk12.disdiag==0, 1, 0))
+
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+    geom_ribbon(data = datObIN.riskdis.ribbon,
+                aes(x = time, ymin = fit_low, ymax = fit_up,
+                    fill = as.factor(riskgrp)), alpha = 0.2) +
+  geom_line(data = datObIN.riskdis,
+            aes(x = time, y = exp, color = as.factor(risk12.disdiag)),
+            linetype = "dashed") +
+        geom_line(data = datObIN.riskdis,
+            aes(x = time, y = fit, color = as.factor(risk12.disdiag))) + 
+      geom_point(data = datObIN.riskdis,
+            aes(x = time, y = n.imp, color = as.factor(risk12.disdiag)), size=1) +
+      scale_color_manual(values = c("#009E73", "#CC79A7")) +
+      labs(x = "", y = "", color="",
+           title = "C. Risk group") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      scale_y_continuous(trans="log10", limits = c(100,2000), breaks = c(100,300,500,1000,2000)) +
+        annotate(geom="text", x=28.5, y=920, label="High risk",size=4) +
+        annotate(geom="text", x=28.5, y=530, label="Normal",size=4) +
+      annotate(geom="text", x=67.5, y=250, label="COVID-19",size=4) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.risk.ln2
+pp.ObIN.ove.risk.ln2
+
+```
+
+```{r}
+threeobsub_row <- plot_grid(pp.ObIN.ove.urban.ln2, pp.ObIN.ove.age.ln2, pp.ObIN.ove.risk.ln2, nrow = 1,
+          rel_heights = c(1, 1, 1))
+
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/ObSub3in1_row.pdf", width = 21, height = 5)
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/ObSub3in1_row.png", width = 21, height = 5)
+
+threeobsub_row
+
+```
+
+
+## Tumor Group - NOT DONE!!
+
+```{r create tumor groups}
+datGYN$mdd <- sapply(strsplit(datGYN$disdiag, ","), "[", 1)
+mdd <- with(subset(datGYN, year>=2017), as.matrix(table(mdd)))
+View(mdd)
+
+## Gyn data also restrict from 2017 and onwards
+
+```
+
+
+```{r create risk groups}
+# create indicator for any cancer: 
+
+# high risk by existing health conditions
+datGYN$cancer <- with(datGYN, ifelse(grepl("癌",disdiag)
+                                    ,1,0))
+with(datGYN, table(cancer))
+mean(datGYN$cancer, na.rm=T)
+
+```
+
+```{r create dataset}
+# Cancer groups
+ datGYN %>% 
+   group_by(time, year, month, time1, COVID1, COVID2, post, cancer) %>% 
+   count(time) -> datGYN.cancer
+
+```
+
+```{r table 1}
+# table 1 
+# total patients
+with(subset(datGYN.cancer, year>=2017 & cancer==0), sum(n))
+with(subset(datGYN.cancer, year>=2017 & cancer==1), sum(n))
+
+## total # patients, before Feb 2020 before pandemic
+with(subset(datGYN.cancer, time1<1 & time1>=-36 & cancer==0), sum(n))
+with(subset(datGYN.cancer, time1<1 & time1>=-36 & cancer==1), sum(n))
+
+## total # patients, starting Feb 2020 during pandemic
+with(subset(datGYN.cancer, time1>=1 & cancer==0), sum(n))
+with(subset(datGYN.cancer, time1>=1 & cancer==1), sum(n))
+
+```
+
+```{r descriptive chart}
+# initial chart of # cases by month; just raw data (2017-2021)
+# ggplot(data = datObIN.risk1, aes(x = time, y = n, group = as.factor(risk1), color = as.factor(risk1))) +
+#       geom_point() +
+#       geom_line() +
+#       ggtitle("Obstetric inpatient admissions by risk group1 (Jan 2017-May 2021)") +
+#       labs(x = "Time", y = "Number of obstetric admissions", color="Risk Group") +
+#       scale_color_hue(labels = c("Low","High")) +
+#       scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+#                        labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+#       geom_vline(xintercept = 61, linetype = "dotted") +
+#     annotate(geom="text", x=66.5, y=1100, label="COVID-19",size=5) +
+#           expand_limits(y = 0) +
+#       goldentheme +
+#   theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.risk1
+# pp.ObIN.risk1
+
+```
+
+```{r descriptive chart log}
+### NEED TO BE CHANGED
+# initial chart of natural log # cases by month and age group; just raw data (2017-2021)
+# ggplot(data = datObIN.risk1, aes(x = time, y = n, group = as.factor(risk1), color = as.factor(risk1))) +
+#      geom_point() +
+#      geom_line() +
+#      ggtitle("Log obstetric inpatient admissions by risk group1 (Jan 2017-May 2021)") +
+#      labs(x = "Time", y = "Natural log obstetric admissions", color="Risk Group") +
+#      scale_color_hue(labels = c("Low","High")) +
+#      scale_x_continuous(limits=c(24,76), breaks=c(24,36,48,60,72,76),
+#                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+#    scale_y_continuous(trans="log10") +
+#      geom_vline(xintercept = 61, linetype = "dotted") +
+#    annotate(geom="text", x=66.5, y=2000, label="COVID-19",size=5) +
+#          expand_limits(y = 0) +
+#      goldentheme +
+#  theme(axis.text.x = element_text(size = 9.5)) -> pp.ObIN.risk1.ln
+# pp.ObIN.risk1.ln
+
+```
+
+```{r}
+with(datOBp, boxplot(age~urban))
+summary(lm(age ~ urban, datOBp))
+
+with(datGYN, boxplot(age~urban))
+summary(lm(age ~ urban, datGYN))
+
+```
+
+
+***
+
+# Put both ob and gyn residence and age subgroup charts in one figure
+
+```{r}
+# OBSTETRICS
+### 2 vertical
+# risk group within age group is in supplement
+
+# residence
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+  geom_ribbon(data = datObIN.urban, 
+                aes(x = time, ymin = fit_low, ymax = fit_up, 
+                    fill = as.factor(urban)), 
+                    alpha = 0.2) +
+  geom_line(data = datObIN.urban,
+            aes(x = time, y = exp, 
+                color = as.factor(urban)), 
+            linetype = "dashed") +
+  geom_line(data = datObIN.urban,
+            aes(x = time, y = fit, color = as.factor(urban))) + 
+  geom_point(data = datObIN.urban,
+             aes(x = time, y = n, color = as.factor(urban)), size=1) +
+  scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "1. Residence") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      annotate(geom="text", x=27, y=1230, label="Rural",size=4) +
+        annotate(geom="text", x=27, y=520, label="Urban",size=4) +
+              annotate(geom="text", x=66, y=200, label="COVID-19",size=4) +
+     scale_y_continuous(trans="log10", limits = c(100, 1500), breaks = c(100, 300, 500, 1000)) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        axis.text.x=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.urban.ln2
+pp.ObIN.ove.urban.ln2
+
+# age group
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+    geom_ribbon(data = datObIN.age,
+                aes(x = time, ymin = fit_low, ymax = fit_up,
+                    fill = as.factor(riskage)), alpha = 0.2) +
+  geom_line(data = datObIN.age,
+            aes(x = time, y = exp, color = as.factor(riskage)),
+            linetype = "dashed") +
+  geom_line(data = datObIN.age,
+            aes(x = time, y = fit, color = as.factor(riskage))) + 
+  geom_point(data = datObIN.age,
+             aes(x = time, y = n, colour = as.factor(riskage)), size=1) +
+    scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "2. Age group") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","May 2021"))) +
+      annotate(geom="text", x=30, y=950, label="18-34 year old",size=4) +
+        annotate(geom="text", x=33.5, y=250, label="<18 and >=35 year old",size=4) +
+              annotate(geom="text", x=66, y=570, label="COVID-19",size=4) +
+     scale_y_continuous(trans="log10", limits = c(100, 1500), breaks = c(100, 300, 500, 1000)) +
+      goldentheme_facet +
+  theme(axis.text.x = element_text(size = 10),
+    axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.ObIN.ove.age.ln2
+pp.ObIN.ove.age.ln2
+
+```
+
+```{r}
+# GYNECOLOGY
+# 2 vertical
+# residence
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+  geom_ribbon(data = datGynIN.urban, 
+                aes(x = time, ymin = fit_low, ymax = fit_up, 
+                    fill = as.factor(urban)), 
+                    alpha = 0.2) +
+  geom_line(data = datGynIN.urban,
+            aes(x = time, y = exp, 
+                color = as.factor(urban)), 
+            linetype = "dashed") +
+  geom_line(data = datGynIN.urban,
+            aes(x = time, y = fit, color = as.factor(urban))) + 
+  geom_point(data = datGynIN.urban,
+             aes(x = time, y = n, color = as.factor(urban)), size=1) +
+  scale_color_manual(values = c("#CC79A7", "#009E73")) +
+      labs(x = "", y = "", color="",
+           title = "1. Residence") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+      annotate(geom="text", x=28, y=700, label="Rural",size=4) +
+        annotate(geom="text", x=28, y=82, label="Urban",size=4) +
+          annotate(geom="text", x=66, y=40, label="COVID-19",size=4) +
+     scale_y_continuous(trans="log10", limits = c(2, 1500), breaks = c(10, 100, 300, 500, 1000)) +
+      goldentheme_facet +
+  theme(axis.title.y=element_blank(),
+        axis.text.x=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.GynIN.ove.urban.ln2
+pp.GynIN.ove.urban.ln2
+
+# age group
+ggplot() +
+        geom_vline(xintercept = 61, linetype = "dotted") +
+    geom_ribbon(data = datGynIN.age,
+                aes(x = time, ymin = fit_low, ymax = fit_up,
+                    fill = as.factor(agegr)), alpha = 0.2) +
+  geom_line(data = datGynIN.age,
+            aes(x = time, y = exp, color = as.factor(agegr)),
+            linetype = "dashed") +
+  geom_line(data = datGynIN.age,
+            aes(x = time, y = fit, color = as.factor(agegr))) + 
+  geom_point(data = datGynIN.age,
+             aes(x = time, y = n, colour = as.factor(agegr)), size=1) +
+    scale_color_manual(values = c("#CC79A7", "#009E73", "#000000")) +
+      labs(x = "", y = "", color="",
+           title = "2. Age group") +
+      scale_x_continuous(limits=c(24,83), breaks=c(24,36,48,60,72,83),
+                       labels=addline_format(c("Jan 2017","Jan 2018","Jan 2019","Jan 2020","Jan 2021","Dec 2021"))) +
+        annotate(geom="text", x=28, y=900, label="18-54",size=4) +
+        annotate(geom="text", x=28, y=80, label=">=55",size=4) +
+          annotate(geom="text", x=28, y=4.5, label="<18",size=4) +
+            annotate(geom="text", x=66, y=3, label="COVID-19",size=4) +
+     scale_y_continuous(trans="log10", limits = c(2, 1500), breaks = c(10, 100, 300, 500, 1000)) +
+      goldentheme_facet +
+  theme(axis.text.x = element_text(size = 10),
+        axis.title.y=element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold")) -> pp.GynIN.ove.age.ln2
+pp.GynIN.ove.age.ln2
+
+```
+
+```{r}
+#dev.new(width=5, height=10, noRStudioGD = TRUE)
+
+twoall_sub <- plot_grid(pp.ObIN.ove.urban.ln2, pp.GynIN.ove.urban.ln2,
+                        pp.ObIN.ove.age.ln2, pp.GynIN.ove.age.ln2,
+                    nrow = 2, ncol = 2,
+          rel_heights = c(1, 1.1, 1, 1.1))
+
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/BothDeptSubin1.pdf", width = 12, height = 9)
+ggsave("~/Documents/RESEARCH/Shandong/Manuscripts/Figures/BothDeptSubin1.png", width = 12, height = 9)
+
+twoall_sub
+
+```
+
+
+***
+
+# Appendix
+
+```{r,ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+```
